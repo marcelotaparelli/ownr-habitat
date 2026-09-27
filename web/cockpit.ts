@@ -75,7 +75,7 @@ async function act(run: () => Promise<unknown>): Promise<void> {
 function render(): void {
   if (!state) return;
   const s = state;
-  $("#organism").textContent = `${s.organism.name} · missão ${s.mission.id} (revisão ${s.context.missionRevision}) · baseline atual ${short(s.context.baselineRevision)}`;
+  $("#organism").textContent = `${s.organism.name} (${s.organism.repositoryPath} @ ${s.organism.baselineRef} = ${short(s.context.baselineRevision)}) · missão ${s.mission.id} (revisão ${s.context.missionRevision})`;
   const running = $("#running");
   running.hidden = !s.running;
   running.textContent = s.running ? `executando ${s.running}…` : "";
