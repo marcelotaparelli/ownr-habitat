@@ -22,6 +22,8 @@ const Env = z.object({
   HABITAT_DB: z.string().min(1).default("habitat.sqlite"),
   /** Outside every repository, so no organism test run ever discovers candidate checkouts. */
   HABITAT_WORKTREES: z.string().min(1).default(join(homedir(), ".cache/ownr-habitat/worktrees")),
+  /** Hermetic dependency trees, one per manifests hash (read-only once built). */
+  HABITAT_DEPENDENCIES: z.string().min(1).default(join(homedir(), ".cache/ownr-habitat/dependencies")),
   /** Which organism adapter to load. Only one exists today. */
   HABITAT_ORGANISM: z.enum(["replay"]).default("replay"),
   /** sandbox: isolated execution (default). trusted-local: host execution, explicit opt-in, NOT a security boundary. */
@@ -40,7 +42,7 @@ const [command = "serve", arg] = args;
 const by = flag("--by");
 if ((command === "accept" || command === "revise-mission") && (!by || by.trim().length < 2)) throw new Error(`${command} exige --by <nome de quem decide>`);
 
-const paths = { root, database: resolve(root, config.HABITAT_DB), worktrees: resolve(root, config.HABITAT_WORKTREES) };
+const paths = { root, database: resolve(root, config.HABITAT_DB), worktrees: resolve(root, config.HABITAT_WORKTREES), dependencies: resolve(root, config.HABITAT_DEPENDENCIES) };
 const deps = { ...(await createReplayHabitat(paths, config.HABITAT_RUNNER, logger, command === "revise-mission" && by ? { reviseMissionBy: by } : {})), logger };
 
 async function cockpitAssets(): Promise<Map<string, Asset>> {

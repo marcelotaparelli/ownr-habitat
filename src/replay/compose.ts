@@ -1,7 +1,8 @@
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { minimalEnv, runCommand } from "../command.ts";
 import { Habitat } from "../evolution.ts";
+import { HermeticDependencies } from "../dependencies.ts";
 import { GitOrganism, GitWorktreeWorkspace } from "../git-workspace.ts";
 import type { Logger } from "../logger.ts";
 import { DirectoryMutationProvider } from "../proposals.ts";
@@ -21,7 +22,7 @@ const ReplayEnv = z.object({
   REPLAY_PROPOSALS: z.string().min(1).default("proposals/replay"),
 });
 
-export type HabitatPaths = { root: string; database: string; worktrees: string };
+export type HabitatPaths = { root: string; database: string; worktrees: string; dependencies: string };
 /** sandbox (default): candidates run isolated. trusted-local: on the host, only when every candidate is trusted. */
 export type RunnerKind = "sandbox" | "trusted-local";
 
@@ -36,11 +37,11 @@ export async function createReplayHabitat(paths: HabitatPaths, runnerKind: Runne
   const organism = replayOrganism(repository, config.REPLAY_BASELINE_REF);
   const git = new GitOrganism(organism.repositoryPath, organism.baselineRef);
   const store = new HabitatStore(paths.database);
-  const dependencies = join(repository, "node_modules");
-  const runner = createRunner(runnerKind, dependencies);
-  // In the sandbox the dependencies are mounted read-only; on the host they are linked into each worktree.
-  const workspace = new GitWorktreeWorkspace(repository, paths.worktrees, runnerKind === "sandbox" ? [] : ["node_modules"]);
-  const environment = await ExecutionEnvironment.probe(runner, { dependencies, lockfiles: ["bun.lock"], tools: ["typescript"] }, git);
+  const runner = createRunner(runnerKind);
+  // Evaluations never see the organism's own node_modules: each revision gets the tree its package.json + bun.lock determine.
+  const dependencies = new HermeticDependencies(git, paths.dependencies);
+  const workspace = new GitWorktreeWorkspace(repository, paths.worktrees, []);
+  const environment = await ExecutionEnvironment.probe(runner, { tools: ["typescript"] }, dependencies);
   const { pathPolicy, evaluators } = replayEvaluators(organism, runner);
   // Telemetry only counts usage of the Module 1 content of the current baseline, from the moment it became
   // the baseline: a candidate commit exists before it is accepted, and usage before acceptance is of older content.
@@ -63,6 +64,7 @@ export async function createReplayHabitat(paths: HabitatPaths, runnerKind: Runne
       telemetry: new ReplayTelemetrySource(resolve(repository, config.REPLAY_EVENTS_DB), since),
       repository: git,
       environment,
+      dependencies,
       logger,
     },
     options,
@@ -70,10 +72,10 @@ export async function createReplayHabitat(paths: HabitatPaths, runnerKind: Runne
   return { habitat, store, workspace, organism, runner };
 }
 
-function createRunner(kind: RunnerKind, dependencies: string): CommandRunner {
+function createRunner(kind: RunnerKind): CommandRunner {
   if (kind === "trusted-local") return new TrustedLocalRunner();
   const reason = LinuxSandboxRunner.unavailable();
   // Never fall back silently: evidence from an unsandboxed run must be an explicit choice.
   if (reason) throw new Error(`sandbox indisponível (${reason}); use HABITAT_RUNNER=trusted-local só se todo candidate for confiável`);
-  return new LinuxSandboxRunner(process.execPath, dependencies);
+  return new LinuxSandboxRunner(process.execPath);
 }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { minimalEnv, runCommand } from "../src/command.ts";
 import { Mission, type DecisionBinding, type EvaluationResult, type EvidenceContext, type Measurement } from "../src/domain.ts";
@@ -10,9 +10,14 @@ import { Habitat, HabitatBusyError, HabitatRefusal } from "../src/evolution.ts";
 import { GitOrganism, GitWorktreeWorkspace } from "../src/git-workspace.ts";
 import type { EvaluationContext, Evaluator, MutationProposal, TelemetrySource } from "../src/ports.ts";
 import type { CommandRunner } from "../src/runner.ts";
+import type { Environment } from "../src/provenance.ts";
+import type { DependencyProvider } from "../src/ports.ts";
 import { REPLAY_TTVO_MISSION, replayEvaluators, replayOrganism } from "../src/replay/organism.ts";
 import { ReplayTelemetrySource } from "../src/replay/telemetry.ts";
 import { LinuxSandboxRunner } from "../src/sandbox.ts";
+import { HermeticDependencies } from "../src/dependencies.ts";
+import { JobLock, staleness, type LockHolder } from "../src/job-lock.ts";
+import { ExecutionEnvironment } from "../src/provenance.ts";
 import { candidateEvidence } from "../src/api.ts";
 import { classify } from "../src/explain.ts";
 import { decide, missionProgress, missionReached, staleReasons } from "../src/selection.ts";
@@ -276,11 +281,16 @@ type FixtureOptions = {
   environment?: string;
   runner?: CommandRunner;
   organismId?: string;
+  /** Real environment identification (overrides the fixed `environment` hash). */
+  environmentSource?: { at(revision: string): Promise<Environment> };
+  dependencies?: DependencyProvider;
+  /** A shared recorder file, to put two Habitat instances on the same lock. */
+  storePath?: string;
 };
 
 function habitatFor(f: Fixture, proposals: MutationProposal[], options: FixtureOptions = {}) {
   const organism = new GitOrganism(f.repo, "main");
-  const store = options.store ?? new HabitatStore(":memory:");
+  const store = options.store ?? new HabitatStore(options.storePath ?? ":memory:");
   const checkEvaluator: Evaluator = options.crash ? new CrashingEvaluator() : new CommandEvaluator("check", ["test", "-f", "content/score.txt"], { timeoutMs: options.checkTimeoutMs ?? 5000, output: "exit-code" }, options.runner ?? LOCAL);
   const habitat = new Habitat(
     {
@@ -293,7 +303,8 @@ function habitatFor(f: Fixture, proposals: MutationProposal[], options: FixtureO
       mutations: { propose: async () => proposals },
       telemetry: options.telemetry ?? new ScriptedTelemetry(),
       repository: organism,
-      environment: { at: async () => ({ hash: options.environment ?? "env-fixture-1", detail: { runtime: { bun: "fixture" }, runner: (options.runner ?? LOCAL).identity, dependencies: { lockfile: "-", installed: "-", tools: {} } } }) },
+      environment: options.environmentSource ?? { at: async () => ({ hash: options.environment ?? "env-fixture-1", detail: { runtime: { bun: "fixture" }, runner: (options.runner ?? LOCAL).identity, dependencies: { lockfile: "-", tree: "-", tools: {} } } }) },
+      ...(options.dependencies ? { dependencies: options.dependencies } : {}),
       logger: silentLogger,
     },
     options.reviseMissionBy ? { reviseMissionBy: options.reviseMissionBy } : {},
@@ -857,7 +868,7 @@ describe("two organisms under one Habitat recorder do not contaminate each other
 describe.skipIf(LinuxSandboxRunner.unavailable() !== null)("candidates evaluated in the linux sandbox", () => {
   test("the fixture loop runs sandboxed and records it in the evidence", async () => {
     const f = await freshRepo();
-    const runner = new LinuxSandboxRunner(process.execPath, null, { memoryMb: 256, pids: 64, cpus: 1, tmpMb: 16 });
+    const runner = new LinuxSandboxRunner(process.execPath, { memoryMb: 256, pids: 64, cpus: 1, tmpMb: 16 });
     const { habitat, store } = habitatFor(f, [proposal("good", patches.good ?? "")], { runner });
     await habitat.observeBaseline();
     const { candidate, decision } = await habitat.evolve("good");
@@ -893,5 +904,182 @@ describe("Candidate Evidence from recorded data", () => {
     expect(classify("scripts/author-golden-m1.ts", rules).kind).toBe("ferramenta de autoria");
     expect(classify("src/http/api.ts", rules).component).toBe("Código do produto (src)");
     expect(classify("README.md", rules).component).toBe("não classificado");
+  });
+});
+
+// ------------------------------------------------------------------ hermetic dependencies
+
+/** A deterministic stand-in for `bun install --frozen-lockfile`: the tree is a pure function of the manifests. */
+const FAKE_INSTALL = ["/bin/sh", "-c", "mkdir -p node_modules/dep/.bin && printf '{\"name\":\"dep\",\"version\":\"%s\"}' \"$(cut -d@ -f2 bun.lock)\" > node_modules/dep/package.json && cp bun.lock node_modules/dep/lock && printf 'module.exports = 1;' > node_modules/dep/index.js && ln -s ../index.js node_modules/dep/.bin/dep"];
+const hermetic = (f: Fixture, root: string, install = FAKE_INSTALL) => new HermeticDependencies(new GitOrganism(f.repo, "main"), root, { manifests: ["package.json", "bun.lock"], install, installTimeoutMs: 10_000 });
+
+async function withManifests(f: Fixture, version = "1.0.0"): Promise<Fixture> {
+  writeFileSync(join(f.repo, "package.json"), JSON.stringify({ name: "fixture", dependencies: { dep: version } }));
+  writeFileSync(join(f.repo, "bun.lock"), `dep@${version}\n`);
+  await git(f.repo, "add", "-A");
+  await git(f.repo, "commit", "--quiet", "-m", `dependencies ${version}`);
+  return { ...f, head: await git(f.repo, "rev-parse", "HEAD") };
+}
+
+describe("hermetic dependencies", () => {
+  test("the tree is built from the revision's manifests, recorded, read-only, and reused only after re-verification", async () => {
+    const f = await withManifests(await freshRepo());
+    const deps = hermetic(f, join(root, `deps-${crypto.randomUUID().slice(0, 6)}`));
+    const first = await deps.ensure(f.head);
+    expect(first.rebuilt).toBe("fresh");
+    expect(readFileSync(join(first.dir, "dep/lock"), "utf8")).toBe("dep@1.0.0\n");
+    expect(statSync(join(first.dir, "dep/index.js")).mode & 0o222).toBe(0);
+    // The organism's working copy is irrelevant: the tree comes from the committed manifests.
+    writeFileSync(join(f.repo, "bun.lock"), "dep@9.9.9\n");
+    const again = await deps.ensure(f.head);
+    expect(again).toEqual({ ...first, rebuilt: null });
+    expect(await deps.identify(f.head)).toEqual({ lockfile: first.lockfile, tree: first.tree, dir: first.dir });
+  });
+
+  test("a tree changed on disk is quarantined and rebuilt, and must reproduce the recorded hash", async () => {
+    const f = await withManifests(await freshRepo());
+    const store = join(root, `deps-${crypto.randomUUID().slice(0, 6)}`);
+    const first = await hermetic(f, store).ensure(f.head);
+    chmodSync(join(first.dir, "dep"), 0o755);
+    writeFileSync(join(first.dir, "dep/evil.js"), "steal()");
+    const rebuilt = await hermetic(f, store).ensure(f.head);
+    expect(rebuilt).toMatchObject({ rebuilt: "tampered", tree: first.tree });
+    expect(existsSync(join(rebuilt.dir, "dep/evil.js"))).toBe(false);
+    expect(readdirSync(store).some((name) => name.startsWith(`${first.lockfile}.tampered-`))).toBe(true);
+    // An installer that is not reproducible cannot replace a recorded tree: evaluation is refused.
+    chmodSync(join(rebuilt.dir, "dep"), 0o755);
+    writeFileSync(join(rebuilt.dir, "dep/evil.js"), "steal()");
+    const drifting = [...FAKE_INSTALL.slice(0, 2), `${FAKE_INSTALL[2]} && date +%s%N > node_modules/dep/stamp`];
+    await expect(hermetic(f, store, drifting).ensure(f.head)).rejects.toThrow("árvore de dependências não reproduzível");
+  });
+
+  test("a candidate cannot change the dependencies its own evaluation uses (and trying it voids the evaluation)", async () => {
+    const f = await withManifests(await freshRepo());
+    const deps = hermetic(f, join(root, `deps-${crypto.randomUUID().slice(0, 6)}`));
+    // Candidate code that rewrites its dependencies while it is being evaluated — possible on the host (trusted-local).
+    class Tamperer implements Evaluator {
+      readonly id = "tamperer";
+      readonly version = "1";
+      async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
+        const dir = context.dependencies ?? "";
+        chmodSync(join(dir, "dep"), 0o755);
+        writeFileSync(join(dir, "dep/index.js"), "module.exports = 'always pass';");
+        return evaluation(this.id, "PASS");
+      }
+    }
+    const good = proposal("good", await patchFor(f.repo, { "content/score.txt": "5" }));
+    const { habitat, store } = habitatFor(f, [good], { dependencies: deps });
+    await habitat.observeBaseline();
+    const tamperer = habitatFor(f, [good], { store, dependencies: deps, extra: [new Tamperer()] }).habitat;
+    await expect(tamperer.evolve("good")).rejects.toThrow("a árvore de dependências mudou durante a avaliação");
+    const [candidate] = store.candidates(MISSION.id);
+    expect(candidate?.status).toBe("failed");
+    expect(store.evaluations("candidate", candidate?.id ?? "")).toEqual([]);
+    expect(store.events(MISSION.id).map((e) => e.kind)).toContain("dependencies_changed_during_evaluation");
+    // A candidate that edits the manifests never runs anything: they are outside its allowed paths.
+    const manifests = proposal("manifests", await patchFor(f.repo, { "bun.lock": "dep@6.6.6\n", "content/score.txt": "5" }));
+    const other = habitatFor(f, [manifests], { store, dependencies: deps }).habitat;
+    const { decision } = await other.evolve("manifests");
+    expect(decision.verdict).toBe("INELIGIBLE");
+  });
+
+  test("a real dependency change produces a new environment and makes earlier evidence STALE", async () => {
+    const f = await withManifests(await freshRepo());
+    const deps = hermetic(f, join(root, `deps-${crypto.randomUUID().slice(0, 6)}`));
+    const environmentSource = await ExecutionEnvironment.probe(LOCAL, { tools: ["dep"] }, deps);
+    const store = new HabitatStore(":memory:");
+    const good = proposal("good", await patchFor(f.repo, { "content/score.txt": "5" }));
+    const { habitat } = habitatFor(f, [good], { store, dependencies: deps, environmentSource });
+    await habitat.observeBaseline();
+    const { candidate, decision } = await habitat.evolve("good");
+    expect(decision.verdict).toBe("EXPERIMENT_READY");
+    const before = (await habitat.context()).environment;
+    expect(store.environment(before)).toMatchObject({ dependencies: { tree: expect.stringMatching(/^[0-9a-f]{16}$/), tools: { dep: "1.0.0" } } });
+
+    await withManifests(f, "2.0.0");
+    await habitat.observeBaseline();
+    const assessment = await habitat.assess(candidate.id);
+    expect(assessment.verdict).toBe("STALE");
+    expect(assessment.stale.join(" ")).toContain("o ambiente de execução mudou");
+    expect((await habitat.context()).environment).not.toBe(before);
+    expect(store.environment((await habitat.context()).environment)).toMatchObject({ dependencies: { tools: { dep: "2.0.0" } } });
+    expect(store.events(MISSION.id).filter((e) => e.kind === "dependencies_built")).toHaveLength(2);
+  });
+});
+
+// ------------------------------------------------------------------ cross-process job lock
+
+describe("one evolution job at a time across processes", () => {
+  class Gate implements Evaluator {
+    readonly id = "gate";
+    readonly version = "1";
+    open: () => void = () => {};
+    readonly opened = new Promise<void>((resolve) => (this.open = resolve));
+    async evaluate(): Promise<EvaluationResult> {
+      await this.opened;
+      return evaluation(this.id, "PASS");
+    }
+  }
+
+  test("two Habitat instances on the same recorder never run jobs concurrently", async () => {
+    const f = await freshRepo();
+    const storePath = join(root, `shared-${crypto.randomUUID().slice(0, 6)}.sqlite`);
+    const gate = new Gate();
+    const a = habitatFor(f, [proposal("good", patches.good ?? "")], { storePath, extra: [gate] }).habitat;
+    const b = habitatFor(f, [proposal("good", patches.good ?? "")], { storePath, extra: [new Gate()] }).habitat;
+    const running = a.observeBaseline();
+    await Bun.sleep(50);
+    await expect(b.observeBaseline()).rejects.toThrow(`Habitat ocupado com observe (pid ${process.pid}`);
+    expect(b.running).toContain("observe (outra instância ou processo");
+    gate.open();
+    await running;
+    expect(b.running).toBeNull();
+  });
+
+  test("a crashed process does not leave the lock behind", async () => {
+    const storePath = join(root, `crash-${crypto.randomUUID().slice(0, 6)}.sqlite`);
+    const script = join(root, `holder-${crypto.randomUUID().slice(0, 6)}.ts`);
+    writeFileSync(
+      script,
+      `import { HabitatStore } from ${JSON.stringify(join(import.meta.dir, "../src/store.ts"))};
+import { JobLock } from ${JSON.stringify(join(import.meta.dir, "../src/job-lock.ts"))};
+new JobLock(new HabitatStore(process.argv[2] ?? ""), "job:${MISSION.id}").acquire("evolve:child", "${MISSION.id}");
+console.log("locked");
+await Bun.sleep(60_000);`,
+    );
+    const child = Bun.spawn([process.execPath, script, storePath], { stdout: "pipe", stderr: "inherit" });
+    const reader = child.stdout.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain("locked");
+
+    const f = await freshRepo();
+    const { habitat, store } = habitatFor(f, [], { storePath });
+    await expect(habitat.observeBaseline()).rejects.toThrow(`Habitat ocupado com evolve:child (pid ${child.pid}`);
+    expect(habitat.running).toBe(`evolve:child (outra instância ou processo: pid ${child.pid})`);
+
+    child.kill("SIGKILL");
+    await child.exited;
+    expect(habitat.running).toBeNull();
+    await habitat.observeBaseline();
+    const recovered = store.events(MISSION.id).find((e) => e.kind === "job_lock_recovered");
+    expect(recovered?.data).toMatchObject({ reason: `processo ${child.pid} não existe mais`, previous: { job: "evolve:child", pid: child.pid } });
+    expect(store.lock(`job:${MISSION.id}`)).toBeUndefined();
+  });
+
+  test("a lease from another host expires without heartbeat; a reused pid never keeps a lease", async () => {
+    const store = new HabitatStore(":memory:");
+    const lock = new JobLock(store, "job:x");
+    const stale = (holder: LockHolder, heartbeatAt: number, now: number) => staleness(holder, heartbeatAt, now, 30_000);
+    const foreign: LockHolder = { pid: 1234, start: "1", host: "other-host", job: "evolve:remote", nonce: "n" };
+    store.tryLock("job:x", foreign, Date.now(), stale);
+    expect(() => lock.acquire("observe", "m")).toThrow("Habitat ocupado com evolve:remote (pid 1234 em other-host");
+    store.tryLock("job:x", foreign, Date.now() - 60_000, () => ({ stale: true, reason: "reset" }));
+    lock.acquire("observe", "m").release();
+    expect(store.events("m").at(0)?.data).toMatchObject({ reason: expect.stringContaining("sem heartbeat de other-host") });
+
+    const reused: LockHolder = { pid: process.pid, start: "0", host: hostname(), job: "evolve:ghost", nonce: "n" };
+    store.tryLock("job:x", reused, Date.now(), stale);
+    lock.acquire("observe", "m").release();
+    expect(store.events("m").at(0)?.data).toMatchObject({ reason: `pid ${process.pid} foi reutilizado por outro processo` });
   });
 });

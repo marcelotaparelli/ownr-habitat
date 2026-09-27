@@ -44,7 +44,7 @@ export type EvidenceBinding = {
 };
 
 /** A command as it was executed to produce evidence. */
-export type CommandRecord = { argv: string[]; runner: string; exitCode: number | null; durationMs: number; timedOut: boolean; limit: "memory" | "pids" | null };
+export type CommandRecord = { argv: string[]; runner: string; exitCode: number | null; durationMs: number; timedOut: boolean; limit: "memory" | "pids" | "seccomp" | null };
 
 export type Provenance = {
   commands: CommandRecord[];

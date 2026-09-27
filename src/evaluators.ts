@@ -75,9 +75,11 @@ export class CommandEvaluator implements Evaluator {
   }
 
   async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
-    const result = await this.runner.run(this.argv, { workspace: context.dir, timeoutMs: this.config.timeoutMs });
-    const failure = result.limit
-      ? `limite de ${result.limit === "memory" ? "memória" : "processos"} do sandbox atingido`
+    const result = await this.runner.run(this.argv, { workspace: context.dir, timeoutMs: this.config.timeoutMs, dependencies: context.dependencies ?? null });
+    const failure = result.limit === "seccomp"
+      ? "violação do sandbox: syscall proibida pelo seccomp (processo morto por SIGSYS)"
+      : result.limit
+        ? `limite de ${result.limit === "memory" ? "memória" : "processos"} do sandbox atingido`
       : result.timedOut
         ? `excedeu ${this.config.timeoutMs} ms`
         : result.truncated

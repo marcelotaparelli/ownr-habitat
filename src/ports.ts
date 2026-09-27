@@ -38,6 +38,8 @@ export interface CandidateWorkspace {
 
 export type EvaluationContext = {
   dir: string;
+  /** Hermetic dependency tree the commands must use (read-only), when the organism has one. */
+  dependencies?: string | null;
   baselineRevision: string;
   revision: string;
   changes: FileChange[];
@@ -55,6 +57,21 @@ export interface OrganismRepository {
   advanceBaseline(from: string, to: string): Promise<void>;
   /** Content identity of these paths (files or directories) at a revision; absent paths count as absent. */
   contentHash(revision: string, paths: string[]): Promise<string>;
+  /** A file's content at a revision, or null when it does not exist there. */
+  readFile(revision: string, path: string): Promise<string | null>;
+}
+
+/** A dependency tree determined by a revision's manifests: where it is, what determined it, what it contains. */
+export type DependencyTree = { dir: string; lockfile: string; tree: string };
+
+/** Supplies the dependencies evaluations run with. Never the organism's own mutable working copy. */
+export interface DependencyProvider {
+  /** Builds, or reuses after re-verifying, the tree the revision's manifests determine. Refuses when it cannot. */
+  ensure(revision: string): Promise<DependencyTree & { rebuilt: "fresh" | "tampered" | null }>;
+  /** Throws when the tree on disk no longer matches what was recorded. */
+  verify(tree: DependencyTree): Promise<void>;
+  /** Identity without building: manifests hash, and the recorded tree when one exists. */
+  identify(revision: string): Promise<{ lockfile: string; tree: string | null; dir: string | null }>;
 }
 
 /** Measurements of the organism in real use (only ever of what is deployed: the baseline). */

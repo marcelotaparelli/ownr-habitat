@@ -161,6 +161,12 @@ export class GitOrganism implements OrganismRepository {
     return sha256(canonical([...present, ...absent].sort(([a], [b]) => ((a ?? "") < (b ?? "") ? -1 : 1)))).slice(0, 16);
   }
 
+  async readFile(revision: string, path: string): Promise<string | null> {
+    const exists = await this.git(["cat-file", "-e", `${revision}:${path}`], [0, 1, 128]);
+    if (exists.exitCode !== 0) return null;
+    return (await this.git(["show", `${revision}:${path}`])).stdout;
+  }
+
   private async git(args: string[], accept: number[] = [0]): Promise<{ exitCode: number; stdout: string }> {
     const result = await runCommand(["git", ...args], { cwd: this.repository, timeoutMs: GIT_TIMEOUT_MS, env: minimalEnv() });
     if (result.exitCode === null || !accept.includes(result.exitCode)) throw new Error(`git ${args[0]} falhou: ${(result.stderr || result.stdout).trim().slice(0, 500)}`);

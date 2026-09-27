@@ -14,10 +14,11 @@ import {
 } from "./domain.ts";
 import { notRun } from "./evaluators.ts";
 import { pathAllowed } from "./evaluators.ts";
-import type { CandidateWorkspace, Evaluator, MutationProposal, MutationProvider, OrganismRepository, TelemetrySource } from "./ports.ts";
+import type { CandidateWorkspace, DependencyProvider, DependencyTree, Evaluator, MutationProposal, MutationProvider, OrganismRepository, TelemetrySource } from "./ports.ts";
 import type { Environment } from "./provenance.ts";
 import { decide, measurementsOf, missionProgress, staleReasons } from "./selection.ts";
 import { sha256 } from "./identity.ts";
+import { HabitatBusyError, JobLock } from "./job-lock.ts";
 import type { HabitatStore, MissionRecord, Observation } from "./store.ts";
 
 export type HabitatLogger = Logger;
@@ -36,12 +37,12 @@ export type HabitatDeps = {
   repository: OrganismRepository;
   /** Identity of the execution environment for a revision (runtime, runner/sandbox, dependencies). */
   environment: { at(revision: string): Promise<Environment> };
+  /** Hermetic dependency trees, determined by each revision's manifests. Absent for organisms without dependencies. */
+  dependencies?: DependencyProvider;
   logger: Logger;
 };
 
-export class HabitatBusyError extends Error {
-  override readonly name = "HabitatBusyError";
-}
+export { HabitatBusyError };
 
 /** A request that the evidence does not support (stale, not acceptable, baseline not observed). */
 export class HabitatRefusal extends Error {
@@ -65,6 +66,7 @@ export class Habitat {
   readonly mission: Mission;
   private readonly missionRecord: MissionRecord;
   private busy: string | null = null;
+  private readonly lock: JobLock;
 
   constructor(
     private readonly deps: HabitatDeps,
@@ -73,12 +75,14 @@ export class Habitat {
   ) {
     this.missionRecord = options.reviseMissionBy ? deps.store.reviseMission(deps.mission, options.reviseMissionBy) : deps.store.ensureMission(deps.mission);
     this.mission = this.missionRecord.mission;
+    this.lock = new JobLock(deps.store, `job:${this.mission.id}`);
     const problems = configurationProblems(deps, this.mission);
     if (problems.length > 0) throw new Error(`configuração do Habitat recusada:\n- ${problems.join("\n- ")}`);
   }
 
+  /** The job running for this mission right now — in this instance or in any other process sharing the recorder. */
   get running(): string | null {
-    return this.busy;
+    return this.busy ?? this.lock.current();
   }
 
   /** The facts every piece of evidence is checked against right now. */
@@ -100,21 +104,23 @@ export class Habitat {
   async observeBaseline(): Promise<{ observationId: string; evaluations: EvaluationResult[] }> {
     return this.exclusive("observe", async () => {
       const { store } = this.deps;
+      const tree = await this.prepareDependencies(await this.deps.repository.baselineRevision());
       const context = await this.context();
       const revision = context.baselineRevision;
-      const observation = store.addObservation(this.mission.id, revision);
       // The baseline is measured in its own worktree too: the live checkout is never an evaluation target.
-      const workspace = await this.deps.workspace.prepare(observation.id, revision);
+      const workspace = await this.deps.workspace.prepare(`obs-${crypto.randomUUID().slice(0, 8)}`, revision);
       const evaluations: EvaluationResult[] = [];
       try {
         for (const evaluator of this.deps.evaluators) {
-          const result = await this.seal(await this.safely(evaluator, { dir: workspace.dir, baselineRevision: revision, revision, changes: [] }), evaluator, context, revision);
-          store.addEvaluation("observation", observation.id, result);
-          evaluations.push(result);
+          evaluations.push(await this.seal(await this.safely(evaluator, { dir: workspace.dir, dependencies: tree?.dir ?? null, baselineRevision: revision, revision, changes: [] }), evaluator, context, revision));
         }
       } finally {
         await this.deps.workspace.dispose(workspace);
       }
+      // Evidence produced with a tree that changed underneath it is not recorded at all.
+      await this.verifyDependencies(tree, null);
+      const observation = store.addObservation(this.mission.id, revision);
+      evaluations.forEach((e) => store.addEvaluation("observation", observation.id, e));
       const telemetry = await this.seal(await this.telemetry(), this.deps.telemetry ?? { id: "telemetry", version: "none" }, context, revision);
       store.addEvaluation("observation", observation.id, telemetry);
       evaluations.push(telemetry);
@@ -175,6 +181,7 @@ export class Habitat {
 
   private async runCandidate(proposal: MutationProposal, reevaluationOf: string | null): Promise<{ candidate: Candidate; decision: Decision }> {
     const { store } = this.deps;
+    const tree = await this.prepareDependencies(await this.deps.repository.baselineRevision());
     const context = await this.context();
     const { observation, evaluations: baselineEvaluations } = this.currentBaseline(context);
     const parentGeneration = await this.baselineGeneration(context.baselineRevision);
@@ -214,15 +221,24 @@ export class Habitat {
 
       store.updateCandidate(candidate.id, { status: "evaluating" });
       store.record("candidate_evaluation_started", { missionId: this.mission.id, candidateId: candidate.id });
-      const evaluationContext = { dir: workspace.dir, baselineRevision: context.baselineRevision, revision: mutated.revision, changes: mutated.changes };
+      const evaluationContext = { dir: workspace.dir, dependencies: tree?.dir ?? null, baselineRevision: context.baselineRevision, revision: mutated.revision, changes: mutated.changes };
+      // The candidate runs with the baseline's tree; a candidate whose manifests differ would need another one.
+      const candidateLock = tree && this.deps.dependencies ? (await this.deps.dependencies.identify(mutated.revision)).lockfile : null;
+      const sameDependencies = !tree || candidateLock === tree.lockfile;
       const evaluations: EvaluationResult[] = [];
       const policy = await this.seal(await this.safely(this.deps.pathPolicy, evaluationContext), this.deps.pathPolicy, context, mutated.revision);
       evaluations.push(policy);
       for (const evaluator of this.deps.evaluators) {
         // A candidate outside its allowed paths may have tampered with tests or instruments: run none of its code.
-        const result = policy.status === "PASS" ? await this.safely(evaluator, evaluationContext) : notRun(evaluator.id, "não executado: o candidate violou a política de caminhos");
+        const result =
+          policy.status !== "PASS"
+            ? notRun(evaluator.id, "não executado: o candidate violou a política de caminhos")
+            : !sameDependencies
+              ? notRun(evaluator.id, "não executado: o candidate altera as dependências (manifestos diferentes da baseline)")
+              : await this.safely(evaluator, evaluationContext);
         evaluations.push(await this.seal(result, evaluator, context, mutated.revision));
       }
+      await this.verifyDependencies(tree, candidate.id);
       evaluations.forEach((e) => store.addEvaluation("candidate", candidate.id, e));
 
       decision = {
@@ -338,6 +354,28 @@ export class Habitat {
     };
   }
 
+  /** The tree the revision's manifests determine, built or re-verified before any evaluation uses it. */
+  private async prepareDependencies(revision: string): Promise<DependencyTree | null> {
+    if (!this.deps.dependencies) return null;
+    const tree = await this.deps.dependencies.ensure(revision);
+    if (tree.rebuilt) {
+      this.deps.store.record(tree.rebuilt === "tampered" ? "dependencies_rebuilt_after_tampering" : "dependencies_built", { missionId: this.mission.id, data: { lockfile: tree.lockfile, tree: tree.tree } });
+    }
+    return tree;
+  }
+
+  /** After evaluation: the tree must be exactly what it was, or nothing evaluated with it counts. */
+  private async verifyDependencies(tree: DependencyTree | null, candidateId: string | null): Promise<void> {
+    if (!tree || !this.deps.dependencies) return;
+    try {
+      await this.deps.dependencies.verify(tree);
+    } catch (error) {
+      if (candidateId) this.deps.store.updateCandidate(candidateId, { status: "failed" });
+      this.deps.store.record("dependencies_changed_during_evaluation", { missionId: this.mission.id, ...(candidateId ? { candidateId } : {}), data: { lockfile: tree.lockfile, error: String(error) } });
+      throw error;
+    }
+  }
+
   /** Candidates of other missions (other organisms sharing the recorder) do not exist for this Habitat. */
   private ownCandidate(candidateId: string): Candidate | undefined {
     const candidate = this.deps.store.candidate(candidateId);
@@ -385,11 +423,13 @@ export class Habitat {
 
   private async exclusive<T>(job: string, run: () => Promise<T>): Promise<T> {
     if (this.busy) throw new HabitatBusyError(`Habitat is busy with ${this.busy}`);
+    const lease = this.lock.acquire(job, this.mission.id);
     this.busy = job;
     try {
       return await run();
     } finally {
       this.busy = null;
+      lease.release();
     }
   }
 }

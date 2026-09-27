@@ -12,8 +12,9 @@ import {
   type FileChange,
 } from "./domain.ts";
 import { sha256 } from "./identity.ts";
+import { LockHolder, type Staleness } from "./job-lock.ts";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS missions (
@@ -87,6 +88,13 @@ CREATE TABLE IF NOT EXISTS assessments (
   detail         TEXT NOT NULL,
   created_at     INTEGER NOT NULL
 );
+-- One evolution job per lock name across every process sharing this recorder (see job-lock.ts).
+CREATE TABLE IF NOT EXISTS job_locks (
+  name         TEXT PRIMARY KEY,
+  holder       TEXT NOT NULL,
+  acquired_at  INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
 -- Execution environments evidence was produced in (runtime, runner, dependencies), by hash.
 CREATE TABLE IF NOT EXISTS environments (
   hash       TEXT PRIMARY KEY,
@@ -158,7 +166,7 @@ const EvaluationRow = z.object({
   provenance: z
     .object({
       commands: z.array(
-        z.object({ argv: z.array(z.string()), runner: z.string(), exitCode: z.number().nullable(), durationMs: z.number(), timedOut: z.boolean(), limit: z.enum(["memory", "pids"]).nullable() }),
+        z.object({ argv: z.array(z.string()), runner: z.string(), exitCode: z.number().nullable(), durationMs: z.number(), timedOut: z.boolean(), limit: z.enum(["memory", "pids", "seccomp"]).nullable() }),
       ),
       instrument: z.string().exactOptional(),
     })
@@ -240,7 +248,7 @@ export class HabitatStore {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
-    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     this.migrate();
     this.db.exec("PRAGMA foreign_keys = ON;");
   }
@@ -397,6 +405,45 @@ export class HabitatStore {
   assessment(observationId: string): { candidateId: string; decision: Decision } | undefined {
     const row = this.db.query<{ candidate_id: string; detail: string }, { observationId: string }>("SELECT candidate_id, detail FROM assessments WHERE observation_id = $observationId").get({ observationId });
     return row ? { candidateId: row.candidate_id, decision: parseDecision(row.detail) } : undefined;
+  }
+
+  /**
+   * Takes the lock unless a live holder has it. Read-check-write happens inside one IMMEDIATE
+   * transaction, so two processes can never both see it free.
+   */
+  tryLock(
+    name: string,
+    me: LockHolder,
+    now: number,
+    staleness: (holder: LockHolder, heartbeatAt: number, now: number) => Staleness,
+  ): { acquired: true; recovered: { holder: LockHolder; reason: string } | null } | { acquired: false; holder: LockHolder; acquiredAt: number } {
+    return this.db.transaction(() => {
+      const current = this.lock(name);
+      let recovered: { holder: LockHolder; reason: string } | null = null;
+      if (current) {
+        const state = staleness(current.holder, current.heartbeatAt, now);
+        if (!state.stale) return { acquired: false as const, holder: current.holder, acquiredAt: current.acquiredAt };
+        recovered = { holder: current.holder, reason: state.reason };
+      }
+      this.db
+        .query("INSERT OR REPLACE INTO job_locks (name, holder, acquired_at, heartbeat_at) VALUES ($name, $holder, $now, $now)")
+        .run({ name, holder: JSON.stringify(me), now });
+      return { acquired: true as const, recovered };
+    }).immediate();
+  }
+
+  heartbeatLock(name: string, me: LockHolder, now: number): void {
+    this.db.query("UPDATE job_locks SET heartbeat_at = $now WHERE name = $name AND holder = $holder").run({ name, holder: JSON.stringify(me), now });
+  }
+
+  /** Only the holder can release; a lease already recovered by someone else is left alone. */
+  releaseLock(name: string, me: LockHolder): void {
+    this.db.query("DELETE FROM job_locks WHERE name = $name AND holder = $holder").run({ name, holder: JSON.stringify(me) });
+  }
+
+  lock(name: string): { holder: LockHolder; acquiredAt: number; heartbeatAt: number } | undefined {
+    const row = this.db.query<{ holder: string; acquired_at: number; heartbeat_at: number }, { name: string }>("SELECT holder, acquired_at, heartbeat_at FROM job_locks WHERE name = $name").get({ name });
+    return row ? { holder: LockHolder.parse(JSON.parse(row.holder)), acquiredAt: row.acquired_at, heartbeatAt: row.heartbeat_at } : undefined;
   }
 
   saveEnvironment(environment: { hash: string; detail: unknown }): void {
