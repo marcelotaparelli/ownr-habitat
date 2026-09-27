@@ -16,7 +16,7 @@ import { ReplayTelemetrySource } from "./telemetry.ts";
 /** Where the Replay organism is. Paths are relative to the Habitat checkout unless absolute. */
 const ReplayEnv = z.object({
   REPLAY_REPOSITORY: z.string().min(1).default("../ownr-replay"),
-  REPLAY_BASELINE_REF: z.string().min(1).default("master"),
+  REPLAY_BASELINE_REF: z.string().min(1).default("main"),
   /** The Replay's learning events (runtime data of the deployed baseline), opened read-only. Relative to the organism. */
   REPLAY_EVENTS_DB: z.string().min(1).default("repo-replay.sqlite"),
   REPLAY_PROPOSALS: z.string().min(1).default("proposals/replay"),

@@ -23,7 +23,7 @@ bun run habitat status
 bun test && bunx tsc --noEmit
 ```
 
-Configuração (todas opcionais): `HABITAT_RUNNER` (`sandbox` | `trusted-local`), `HABITAT_PORT`, `HABITAT_DB` (`habitat.sqlite`), `HABITAT_WORKTREES` (`~/.cache/ownr-habitat/worktrees`), `HABITAT_ORGANISM` (`replay`). Organismo Replay: `REPLAY_REPOSITORY` (`../ownr-replay`), `REPLAY_BASELINE_REF` (`master`), `REPLAY_EVENTS_DB` (`repo-replay.sqlite`, relativo ao organismo), `REPLAY_PROPOSALS` (`proposals/replay`).
+Configuração (todas opcionais): `HABITAT_RUNNER` (`sandbox` | `trusted-local`), `HABITAT_PORT`, `HABITAT_DB` (`habitat.sqlite`), `HABITAT_WORKTREES` (`~/.cache/ownr-habitat/worktrees`), `HABITAT_ORGANISM` (`replay`). Organismo Replay: `REPLAY_REPOSITORY` (`../ownr-replay`), `REPLAY_BASELINE_REF` (`main`), `REPLAY_EVENTS_DB` (`repo-replay.sqlite`, relativo ao organismo), `REPLAY_PROPOSALS` (`proposals/replay`).
 
 - **Organismo**: `Organism { repositoryPath, baselineRef, allowedPaths }`. A baseline é sempre `git rev-parse <baselineRef>^{commit}` no repositório do organismo — commits no Habitat não a movem.
 - **Missão** `replay-ttvo-m1`, envelope, fitness (proxies × outcomes) e métricas protegidas: `src/replay/organism.ts`. Snapshot em `habitat.sqlite`; mudar a definição exige `revise-mission`.

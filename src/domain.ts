@@ -173,7 +173,7 @@ export type Organism = {
   name: string;
   /** Its own git repository, outside Habitat (the control plane never evaluates in place). */
   repositoryPath: string;
-  /** The ref naming the baseline (e.g. "master"); the baseline revision is always rev-parse of it. */
+  /** The ref naming the baseline (e.g. "main"); the baseline revision is always rev-parse of it. */
   baselineRef: string;
   /** Paths candidates may change; everything else (tests, instruments, sources) is protected. */
   allowedPaths: string[];
