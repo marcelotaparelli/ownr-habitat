@@ -177,6 +177,20 @@ export type Organism = {
   baselineRef: string;
   /** Paths candidates may change; everything else (tests, instruments, sources) is protected. */
   allowedPaths: string[];
+  /** Descriptive map from paths to components, used only to explain changes (heuristic, never a gate). */
+  components?: ComponentRule[];
+};
+
+/** Heuristic by nature: it knows paths, not semantics. */
+export type ComponentRule = {
+  /** Regular expression over the repository-relative path; $1…$9 in `label` refer to its groups. */
+  pattern: string;
+  label: string;
+  kind: string;
+  /** What a change here can reach. */
+  affects: string;
+  /** Evaluators that exercise this component. */
+  checkedBy: string[];
 };
 
 // ---------------------------------------------------------------- candidates & decisions

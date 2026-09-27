@@ -1,4 +1,4 @@
-type Child = Node | string | number | false | null | undefined | Child[];
+export type Child = Node | string | number | false | null | undefined | Child[];
 type Attrs = Record<string, string | number | boolean | EventListener | undefined> & { class?: string };
 
 /** Tiny hyperscript: h("button", { class: "x", onclick }, "label"). */

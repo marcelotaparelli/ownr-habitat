@@ -86,3 +86,21 @@ summary { cursor: pointer; }
 .events time { color: var(--muted); font-family: var(--mono); margin-right: 6px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .error { color: var(--fail); }
+/* Candidate Evidence */
+.ladder { display: flex; align-items: stretch; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
+.rung { flex: 1 1 150px; border: 2px dashed var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12px; }
+.rung.reached { border: 2px solid var(--info); background: var(--info-soft); }
+.rung.not-reached { opacity: 0.75; }
+.rung .mono { font-size: 11px; }
+.neq { align-self: center; font-size: 20px; font-weight: 700; color: var(--muted); }
+.claims-box { border: 2px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 6px 10px; margin: 10px 0; }
+.evidence-box { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 10px 0; }
+.claims-box h3, .evidence-box h3 { margin-top: 4px; }
+.ce-section h3 { font-size: 13px; margin: 12px 0 4px; }
+.statements { list-style: none; margin: 0; padding: 0; }
+.statements li { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.basis { display: inline-block; font: 700 10px/16px var(--mono); padding: 0 5px; border-radius: 3px; }
+.b-evidence { background: var(--pass-soft); color: var(--pass); }
+.b-heuristic { background: var(--none-soft); color: var(--none); border: 1px dashed var(--none); }
+.b-claim { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
+.pre-line { white-space: pre-line; font-family: var(--mono); font-size: 12px; }

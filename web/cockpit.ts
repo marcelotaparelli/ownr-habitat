@@ -1,7 +1,8 @@
-import type { Candidate, Decision, EvaluationResult, FileChange, Measurement } from "../src/domain.ts";
+import type { Candidate, ConstraintResult, Decision, EvaluationResult, FileChange, Measurement, MetricComparison } from "../src/domain.ts";
+import type { Basis, CandidateEvidence, EvidenceLevel, Statement } from "../src/explain.ts";
 import type { CandidateAssessment } from "../src/evolution.ts";
 import type { HabitatEvent } from "../src/store.ts";
-import { $, h } from "./dom.ts";
+import { $, h, type Child } from "./dom.ts";
 
 /**
  * The Cockpit: where the organism is, where it should be, what the envelope allows,
@@ -18,6 +19,7 @@ type CandidateDetail = {
   decision: Decision | null;
   diff: string | null;
   environment: Record<string, unknown> | null;
+  evidence: CandidateEvidence | undefined;
   events: HabitatEvent[];
 };
 
@@ -223,87 +225,132 @@ async function select(id: string): Promise<void> {
   await renderCandidate(id);
 }
 
+const BASIS_LABEL: Record<Basis, string> = { evidence: "EVIDÊNCIA", heuristic: "HEURÍSTICA", claim: "ALEGAÇÃO" };
+const statements = (items: Statement[]) =>
+  h(
+    "ul",
+    { class: "statements" },
+    items.map((s) => h("li", {}, h("span", { class: `basis b-${s.basis}` }, BASIS_LABEL[s.basis]), " ", s.text, s.detail ? h("div", { class: "muted pre-line" }, s.detail) : null)),
+  );
+const section = (title: string, ...body: Child[]) => h("section", { class: "ce-section" }, h("h3", {}, title), ...body);
+
+/** Three rungs, each needing strictly more evidence than the previous one. Only the one reached is filled. */
+function ladder(level: EvidenceLevel) {
+  const rungs: { level: EvidenceLevel; title: string; verdicts: string; needs: string }[] = [
+    { level: "proxy", title: "Proxy melhorou", verdicts: "PROXY_IMPROVED / EXPERIMENT_READY", needs: "medido no candidate, antes de qualquer uso — é hipótese" },
+    { level: "outcome", title: "Outcome melhorou", verdicts: "OUTCOME_IMPROVED", needs: "medido em uso real da baseline, amostra suficiente, instrumento idêntico" },
+    { level: "mission", title: "Missão cumprida", verdicts: "MISSION_MET", needs: "todo o estado desejado atingido com dados suficientes" },
+  ];
+  return h(
+    "div",
+    { class: "ladder", role: "list", "aria-label": "Nível de evidência" },
+    rungs.map((r, i) => [
+      i > 0 ? h("span", { class: "neq", "aria-hidden": "true" }, "≠") : null,
+      h(
+        "div",
+        { class: `rung ${r.level === level ? "reached" : "not-reached"}`, role: "listitem", "aria-current": String(r.level === level) },
+        h("strong", {}, r.title),
+        h("div", { class: "mono" }, r.verdicts),
+        h("div", { class: "muted" }, r.level === level ? `este candidate: ${r.needs}` : `não comprovado — exige: ${r.needs}`),
+      ),
+    ]),
+  );
+}
+
+function comparisonTable(rows: MetricComparison[]) {
+  return rows.length
+    ? h("table", {}, rows.map((m) => h("tr", {}, h("td", {}, m.label), h("td", { class: "num" }, `${m.baseline ?? "—"} → ${m.candidate ?? "—"}`), h("td", {}, badge(m.outcome)))))
+    : h("p", { class: "muted" }, "Nenhuma.");
+}
+
+function constraintTable(rows: ConstraintResult[]) {
+  return rows.length ? h("table", {}, rows.map((k) => h("tr", {}, h("td", {}, k.name), h("td", {}, badge(k.status)), h("td", { class: "muted" }, k.detail)))) : h("p", { class: "muted" }, "Sem resultado.");
+}
+
 async function renderCandidate(id: string): Promise<void> {
   const d = await api<CandidateDetail>(`/api/candidates/${encodeURIComponent(id)}`);
   const c = d.candidate;
+  const e = d.evidence;
   const { verdict, recordedVerdict, stale } = d.assessment;
   const who = h("input", { "aria-label": "Quem aceita", placeholder: "seu nome", size: 14 });
-  const decision = d.decision;
   const current = Boolean(state?.baseline?.current);
   $("#candidate").replaceChildren(
     h(
       "div",
       { class: "panel" },
-      h("h2", {}, `Candidate ${c.id} · geração ${c.generation}`),
-      h("p", {}, c.hypothesis),
-      h("p", { class: "muted" }, `baseline ${short(c.parentRevision)} → candidate ${c.revision ? short(c.revision) : "—"} · origem ${c.source.kind} (${c.source.author})`, c.reevaluationOf ? ` · reavaliação de ${c.reevaluationOf}` : ""),
-      c.claims ? h("p", { class: "claims" }, h("strong", {}, "Alegação do autor (não é evidência): "), c.claims) : null,
+      h("h2", {}, `Candidate Evidence · ${c.id} · geração ${c.generation}`),
+      h("p", { class: "muted" }, `baseline ${short(c.parentRevision)} → candidate ${c.revision ? short(c.revision) : "—"}`, c.reevaluationOf ? ` · reavaliação de ${c.reevaluationOf}` : ""),
       verdict
         ? h("div", { class: "verdict" }, badge(verdict), " ", h("span", { class: "muted" }, VERDICT_HELP[verdict] ?? ""), verdict === "STALE" && recordedVerdict ? h("span", { class: "muted" }, ` (registrado: ${recordedVerdict})`) : null)
         : h("p", { class: "muted" }, `Sem decisão (${c.status}).`),
-      stale.length ? h("ul", { class: "error" }, stale.map((r) => h("li", {}, r))) : null,
+      e ? ladder(e.level) : null,
       stale.length && c.revision ? h("p", {}, h("button", { disabled: Boolean(state?.running) || !current, onclick: () => act(() => api(`/api/candidates/${encodeURIComponent(c.id)}/reevaluate`, { method: "POST", body: {} })) }, "Reavaliar contra a baseline atual")) : null,
       verdict && ACCEPTABLE.has(verdict) && c.status === "evaluated"
         ? h(
             "div",
             { class: "row" },
-            h("span", {}, "Aceitar faz fast-forward da branch atual até ", h("span", { class: "mono" }, c.revision ? short(c.revision) : ""), ": ele vira a nova baseline. Sem push nem deploy; a próxima observação julga o experimento."),
+            h("span", {}, "Aceitar faz fast-forward da baseline até ", h("span", { class: "mono" }, c.revision ? short(c.revision) : ""), ". Sem push nem deploy; a próxima observação julga o experimento."),
             who,
             h("button", { class: "primary", onclick: () => act(() => api(`/api/candidates/${encodeURIComponent(c.id)}/accept`, { method: "POST", body: { by: who.value } })) }, "Aceitar como nova baseline"),
           )
         : null,
-      decision
+      e
         ? [
-            h("ul", {}, decision.reasons.map((r) => h("li", {}, r))),
-            decision.warnings.length ? h("ul", { class: "claims" }, decision.warnings.map((w) => h("li", {}, `aviso: ${w}`))) : null,
-            h("h3", {}, "Envelope"),
-            h("table", {}, decision.constraints.map((k) => h("tr", {}, h("td", {}, badge(k.severity, k.severity.toUpperCase())), h("td", {}, k.name), h("td", {}, badge(k.status)), h("td", { class: "muted" }, k.detail)))),
-            h("h3", {}, "Fitness (baseline → candidate)"),
             h(
-              "table",
-              {},
-              decision.comparisons.map((m) => h("tr", {}, h("td", {}, h("span", { class: "muted" }, `${m.kind} `), m.label), h("td", { class: "num" }, `${m.baseline ?? "—"} → ${m.candidate ?? "—"}`), h("td", {}, badge(m.outcome)))),
-              decision.guards.map((g) => h("tr", {}, h("td", {}, h("span", { class: "muted" }, "protegida "), g.label), h("td", { class: "num" }, `${g.value ?? "—"} (${g.operator} ${g.threshold})`), h("td", {}, badge(g.status)))),
+              "div",
+              { class: "claims-box" },
+              h("h3", {}, "Alegações do MutationProvider — não são evidência"),
+              h("p", {}, h("span", { class: "basis b-claim" }, "ALEGAÇÃO"), " ", e.claims.hypothesis),
+              e.claims.claims ? h("p", {}, h("span", { class: "basis b-claim" }, "ALEGAÇÃO"), " ", e.claims.claims) : null,
+              h("p", { class: "muted" }, `origem: ${e.claims.source}. A decisão não usa nada deste quadro.`),
             ),
-            decision.binding
-              ? h(
-                  "details",
+            h(
+              "div",
+              { class: "evidence-box" },
+              h("h3", {}, "Evidência independente e análise"),
+              section("Por que este veredito", statements(e.rationale)),
+              section("Intent", statements(e.intent)),
+              section("O que mudou", statements(e.changeSummary)),
+              section("Hipótese da missão", statements(e.missionHypothesis)),
+              section(
+                "Arquivos e componentes",
+                h(
+                  "table",
                   {},
-                  h("summary", {}, "Vínculo da evidência"),
-                  h(
-                    "pre",
-                    {},
-                    [
-                      `baseline   ${decision.binding.baselineRevision}`,
-                      `candidate  ${decision.binding.candidateRevision}`,
-                      `observação ${decision.binding.baselineObservationId}`,
-                      `missão     ${decision.binding.missionId} rev ${decision.binding.missionRevision} ${decision.binding.missionHash.slice(0, 16)}`,
-                      `envelope   ${decision.binding.envelopeHash.slice(0, 16)}`,
-                      ...decision.binding.evaluators.map((e) => `avaliador  ${e}`),
-                      `ambiente   ${decision.binding.environment}`,
-                    ].join("\n"),
-                  ),
-                  d.environment ? h("pre", {}, JSON.stringify(d.environment, null, 2)) : null,
-                )
-              : null,
+                  h("tr", {}, h("th", {}, "Arquivo"), h("th", {}, "Componente (heurística)"), h("th", {}, "±")),
+                  e.affected.map((f) => h("tr", {}, h("td", { class: "mono" }, `${f.status} ${f.path}`), h("td", {}, f.component, h("div", { class: "muted" }, f.kind)), h("td", { class: "num" }, f.added === null ? "bin" : `+${f.added} −${f.removed}`))),
+                ),
+              ),
+              section("Blast radius", statements(e.blastRadius)),
+              section("Riscos e incertezas", statements(e.risks)),
+              section("Envelope · HARD", constraintTable(e.envelope.hard)),
+              section("Envelope · SOFT (aviso, nunca melhora o veredito)", constraintTable(e.envelope.soft)),
+              section(
+                "Evidência proxy (medida no candidate)",
+                comparisonTable(e.proxies),
+                h("table", {}, e.guards.map((g) => h("tr", {}, h("td", {}, `protegida: ${g.label}`), h("td", { class: "num" }, `${g.value ?? "—"} (${g.operator} ${g.threshold})`), h("td", {}, badge(g.status))))),
+              ),
+              section("Evidência outcome (só em uso real da baseline)", comparisonTable(e.outcomes), h("p", { class: "muted" }, "Candidates nunca são medidos por telemetria: outcomes aparecem aqui como sem dados até um experimento aceito rodar em uso real.")),
+              section("Proveniência", statements(e.provenance)),
+            ),
           ]
         : null,
-      h("h3", {}, "Avaliações independentes"),
-      d.evaluations.map((e) =>
-        h(
-          "details",
-          {},
-          h("summary", {}, badge(e.status), ` ${e.evaluatorId} · ${e.durationMs} ms`, e.errors[0] ? h("span", { class: "muted" }, ` — ${e.errors[0]}`) : null),
-          e.measurements.length ? h("table", {}, e.measurements.map((m) => h("tr", {}, h("td", { class: "mono" }, m.metric), h("td", { class: "num" }, fmt(m)), h("td", {}, m.status === "MEASURED" ? "" : badge(m.status))))) : null,
-          e.evidence.map((ev) => [h("p", {}, ev.summary), ev.detail ? h("pre", {}, ev.detail) : null]),
-          e.binding ? h("p", { class: "muted mono" }, `${e.binding.evaluator} · ${short(e.binding.baselineRevision)} → ${short(e.binding.subjectRevision)} · ambiente ${e.binding.environment}`) : h("p", { class: "error" }, "sem vínculo de evidência"),
-          e.provenance?.instrument ? h("p", { class: "muted mono" }, `instrumento ${e.provenance.instrument}`) : null,
-          (e.provenance?.commands ?? []).map((c) => h("p", { class: "muted mono" }, `$ ${c.argv.join(" ")} · ${c.runner} · exit ${c.exitCode ?? "—"} · ${c.durationMs} ms${c.limit ? ` · limite ${c.limit}` : ""}${c.timedOut ? " · timeout" : ""}`)),
+      h(
+        "details",
+        {},
+        h("summary", {}, "Detalhes brutos (avaliações, eventos, diff)"),
+        d.evaluations.map((ev) =>
+          h(
+            "details",
+            {},
+            h("summary", {}, badge(ev.status), ` ${ev.evaluatorId} · ${ev.durationMs} ms`, ev.errors[0] ? h("span", { class: "muted" }, ` — ${ev.errors[0]}`) : null),
+            ev.measurements.length ? h("table", {}, ev.measurements.map((m) => h("tr", {}, h("td", { class: "mono" }, m.metric), h("td", { class: "num" }, fmt(m)), h("td", {}, m.status === "MEASURED" ? "" : badge(m.status))))) : null,
+            ev.evidence.map((x) => [h("p", {}, x.summary), x.detail ? h("pre", {}, x.detail) : null]),
+          ),
         ),
+        h("ul", { class: "events" }, d.events.map((ev) => h("li", {}, h("time", {}, time(ev.createdAt)), h("strong", {}, ev.kind)))),
+        d.diff ? h("pre", {}, d.diff) : null,
       ),
-      h("h3", {}, `Arquivos alterados (${d.changes.length})`),
-      h("ul", { class: "mono" }, d.changes.map((f) => h("li", {}, `${f.status} ${f.path}`))),
-      d.diff ? h("details", {}, h("summary", {}, "Diff"), h("pre", {}, d.diff)) : null,
     ),
   );
 }

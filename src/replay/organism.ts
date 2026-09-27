@@ -15,6 +15,21 @@ export function replayOrganism(repositoryPath: string, baselineRef: string): Org
     repositoryPath,
     baselineRef,
     allowedPaths: ["data/golden/ops-triage-ai/stages/**", "data/golden/ops-triage-ai/journey.json", "scripts/author-golden-m1.ts"],
+    // Explains changes only (a candidate outside allowedPaths is INELIGIBLE regardless). First match wins.
+    components: [
+      {
+        pattern: "^data/golden/ops-triage-ai/stages/(m\\d+)/(\\d+)-([^/]+)/",
+        label: "Etapa $1-$2 ($3)",
+        kind: "conteúdo do currículo",
+        affects: "o que o aluno lê, o código de referência mostrado e os testes desta etapa; as etapas seguintes do módulo partem do código aceito nela (workspace cumulativo)",
+        checkedBy: ["replay-curriculum", "tests"],
+      },
+      { pattern: "^data/golden/ops-triage-ai/journey\\.json$", label: "Estrutura da jornada", kind: "conteúdo do currículo", affects: "ordem de módulos e etapas, conceitos e Knowledge Map", checkedBy: ["replay-curriculum", "tests"] },
+      { pattern: "^scripts/author-golden-m1\\.ts$", label: "Fonte de autoria do Module 1", kind: "ferramenta de autoria", affects: "gera o conteúdo das etapas do Module 1; não roda no produto", checkedBy: ["typecheck"] },
+      { pattern: "^scripts/measure\\.ts$", label: "Instrumento de medição", kind: "instrumento", affects: "as medidas que a missão usa", checkedBy: [] },
+      { pattern: "^tests/", label: "Testes", kind: "teste", affects: "o que conta como correto", checkedBy: [] },
+      { pattern: "^(src|web)/", label: "Código do produto ($1)", kind: "código de runtime", affects: "comportamento do Replay para todos os alunos", checkedBy: ["typecheck", "tests"] },
+    ],
   };
 }
 

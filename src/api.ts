@@ -3,6 +3,7 @@ import type { Logger } from "./logger.ts";
 import { HttpError, Router, json, readBody } from "./http/router.ts";
 import type { Organism } from "./domain.ts";
 import { HabitatBusyError, HabitatRefusal, type Habitat } from "./evolution.ts";
+import { explainCandidate, type CandidateEvidence } from "./explain.ts";
 import type { GitWorktreeWorkspace } from "./git-workspace.ts";
 import { missionReached } from "./selection.ts";
 import type { HabitatStore } from "./store.ts";
@@ -43,6 +44,31 @@ export async function snapshot({ habitat, store, organism }: Pick<HabitatDeps, "
     proposals,
     running: habitat.running,
   };
+}
+
+/** Candidate Evidence for one candidate of this Habitat's mission, from recorded data only. */
+export async function candidateEvidence({ habitat, store, workspace, organism }: Pick<HabitatDeps, "habitat" | "store" | "workspace" | "organism">, id: string): Promise<CandidateEvidence | undefined> {
+  const candidate = store.candidate(id);
+  if (!candidate || candidate.missionId !== habitat.mission.id) return undefined;
+  const decision = store.decision(id) ?? null;
+  const { verdict, stale } = await habitat.assess(id);
+  const stats = candidate.revision ? await workspace.numstat(candidate.parentRevision, candidate.revision) : [];
+  const baselineId = decision?.binding?.baselineObservationId;
+  return explainCandidate({
+    mission: habitat.mission,
+    candidate,
+    decision,
+    verdict,
+    stale,
+    evaluations: store.evaluations("candidate", id),
+    baselineEvaluations: baselineId ? store.evaluations("observation", baselineId) : [],
+    files: store.changes(id).map((c) => {
+      const stat = stats.find((x) => x.path === c.path);
+      return { path: c.path, status: c.status, added: stat?.added ?? null, removed: stat?.removed ?? null };
+    }),
+    components: organism.components ?? [],
+    environment: decision?.binding ? (store.environment(decision.binding.environment) ?? null) : null,
+  });
 }
 
 const Accept = z.strictObject({ by: z.string().trim().min(2).max(80) });
@@ -98,6 +124,7 @@ export function createHabitatApi(deps: HabitatDeps): Router {
         // The retained revision outlives the worktree: every candidate stays inspectable.
         diff: candidate.revision ? (await workspace.diff(candidate.parentRevision, candidate.revision)).slice(0, 200_000) : null,
         environment: decision?.binding ? (store.environment(decision.binding.environment) ?? null) : null,
+        evidence: await candidateEvidence(deps, id),
         events: store.events(habitat.mission.id, 500).filter((e) => e.candidateId === id).reverse(),
       });
     })

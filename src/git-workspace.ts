@@ -80,6 +80,19 @@ export class GitWorktreeWorkspace implements CandidateWorkspace {
     throw new Error(`git merge-base falhou: ${result.stderr.trim().slice(0, 300)}`);
   }
 
+  /** Lines added/removed per file (null for binary files). */
+  async numstat(from: string, to: string): Promise<{ path: string; added: number | null; removed: number | null }[]> {
+    const out = await this.git(["diff", "--numstat", "--no-renames", from, to]);
+    return out
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [added = "-", removed = "-", ...path] = line.split("\t");
+        return { path: path.join("\t"), added: added === "-" ? null : Number(added), removed: removed === "-" ? null : Number(removed) };
+      });
+  }
+
   async diff(from: string, to: string): Promise<string> {
     return this.git(["diff", "--stat", "--patch", from, to]);
   }

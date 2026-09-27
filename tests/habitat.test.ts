@@ -13,6 +13,8 @@ import type { CommandRunner } from "../src/runner.ts";
 import { REPLAY_TTVO_MISSION, replayEvaluators, replayOrganism } from "../src/replay/organism.ts";
 import { ReplayTelemetrySource } from "../src/replay/telemetry.ts";
 import { LinuxSandboxRunner } from "../src/sandbox.ts";
+import { candidateEvidence } from "../src/api.ts";
+import { classify } from "../src/explain.ts";
 import { decide, missionProgress, missionReached, staleReasons } from "../src/selection.ts";
 import { HabitatStore, MissionDriftError } from "../src/store.ts";
 import { silentLogger } from "../src/logger.ts";
@@ -862,5 +864,34 @@ describe.skipIf(LinuxSandboxRunner.unavailable() !== null)("candidates evaluated
     expect(decision.verdict).toBe("EXPERIMENT_READY");
     const check = store.evaluations("candidate", candidate.id).find((e) => e.evaluatorId === "check");
     expect(check).toMatchObject({ status: "PASS", provenance: { commands: [{ runner: "linux-sandbox", exitCode: 0, limit: null }] } });
+  });
+});
+
+// ------------------------------------------------------------------ Candidate Evidence end to end
+
+describe("Candidate Evidence from recorded data", () => {
+  test("a real candidate is explained from its diff, bound evaluations and decision", async () => {
+    const f = await freshRepo();
+    const { habitat, store } = habitatFor(f, [proposal("good", patches.good ?? "", CLAIMS)]);
+    await habitat.observeBaseline();
+    const { candidate } = await habitat.evolve("good");
+    const organism = { id: "fixture", name: "Fixture", repositoryPath: f.repo, baselineRef: "main", allowedPaths: ["content/**"], components: [{ pattern: "^content/", label: "Conteúdo", kind: "dados", affects: "o score medido", checkedBy: ["score"] }] };
+    const e = await candidateEvidence({ habitat, store, workspace: new GitWorktreeWorkspace(f.repo, f.worktrees, []), organism }, candidate.id);
+    expect(e?.verdict).toBe("EXPERIMENT_READY");
+    expect(e?.level).toBe("proxy");
+    expect(e?.affected).toEqual([{ path: "content/score.txt", status: "M", added: 1, removed: 1, component: "Conteúdo", kind: "dados", affects: "o score medido", checkedBy: ["score"] }]);
+    expect(e?.claims.claims).toBe(CLAIMS);
+    expect(e?.rationale.some((s) => s.text.includes(CLAIMS))).toBe(false);
+    expect(e?.provenance.find((s) => s.text === "check: PASS")?.detail).toContain("$ test -f content/score.txt → exit 0");
+    // Candidates of another mission are not explained here.
+    expect(await candidateEvidence({ habitat, store, workspace: new GitWorktreeWorkspace(f.repo, f.worktrees, []), organism }, "cand-unknown")).toBeUndefined();
+  });
+
+  test("Replay paths map to curriculum components (heuristic), unknown paths stay unclassified", () => {
+    const rules = replayOrganism("/repo", "master").components ?? [];
+    expect(classify("data/golden/ops-triage-ai/stages/m1/10-best-so-far/stage.json", rules).component).toBe("Etapa m1-10 (best-so-far)");
+    expect(classify("scripts/author-golden-m1.ts", rules).kind).toBe("ferramenta de autoria");
+    expect(classify("src/http/api.ts", rules).component).toBe("Código do produto (src)");
+    expect(classify("README.md", rules).component).toBe("não classificado");
   });
 });
