@@ -62,7 +62,7 @@ td.num { font-family: var(--mono); white-space: nowrap; }
 .s-PASS, .s-MET, .s-OUTCOME_IMPROVED, .s-MISSION_MET, .s-improved, .s-accepted { background: var(--pass-soft); color: var(--pass); }
 .s-EXPERIMENT_READY, .s-PROXY_IMPROVED { background: var(--info-soft); color: var(--info); }
 .s-FAIL, .s-NOT_MET, .s-INELIGIBLE, .s-REGRESSED, .s-worse, .s-failed { background: var(--fail-soft); color: var(--fail); }
-.s-INSUFFICIENT_DATA, .s-insufficient_data, .s-STALE, .s-TRADEOFF, .s-unknown { background: var(--warn-soft); color: var(--warn); }
+.s-INSUFFICIENT_DATA, .s-insufficient_data, .s-untrusted, .s-STALE, .s-TRADEOFF, .s-unknown { background: var(--warn-soft); color: var(--warn); }
 .s-NOT_RUN, .s-NEUTRAL, .s-unchanged, .s-proposed, .s-prepared, .s-evaluating, .s-evaluated, .s-hard, .s-soft { background: var(--none-soft); color: var(--none); }
 .s-hard { font-weight: 700; }
 button { white-space: nowrap; font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--sunken); color: var(--text); cursor: pointer; }

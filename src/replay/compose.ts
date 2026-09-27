@@ -1,10 +1,13 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import { minimalEnv, runCommand } from "../command.ts";
 import { Habitat } from "../evolution.ts";
 import { GitOrganism, GitWorktreeWorkspace } from "../git-workspace.ts";
 import type { Logger } from "../logger.ts";
 import { DirectoryMutationProvider } from "../proposals.ts";
+import { ExecutionEnvironment } from "../provenance.ts";
+import { TrustedLocalRunner, type CommandRunner } from "../runner.ts";
+import { LinuxSandboxRunner } from "../sandbox.ts";
 import { HabitatStore } from "../store.ts";
 import { REPLAY_TTVO_MISSION, replayEvaluators, replayOrganism } from "./organism.ts";
 import { ReplayTelemetrySource } from "./telemetry.ts";
@@ -19,11 +22,13 @@ const ReplayEnv = z.object({
 });
 
 export type HabitatPaths = { root: string; database: string; worktrees: string };
+/** sandbox (default): candidates run isolated. trusted-local: on the host, only when every candidate is trusted. */
+export type RunnerKind = "sandbox" | "trusted-local";
 
 const M1_CONTENT = "data/golden/ops-triage-ai/stages/m1";
 
 /** Wires the Replay organism into a Habitat. The core only ever sees the Organism, never "Replay". */
-export function createReplayHabitat(paths: HabitatPaths, logger: Logger, options: { reviseMissionBy?: string } = {}, env: Record<string, string | undefined> = process.env) {
+export async function createReplayHabitat(paths: HabitatPaths, runnerKind: RunnerKind, logger: Logger, options: { reviseMissionBy?: string } = {}, env: Record<string, string | undefined> = process.env) {
   const parsed = ReplayEnv.safeParse(env);
   if (!parsed.success) throw new Error("Invalid Replay organism configuration: " + parsed.error.issues.map((i) => i.path.join(".")).join(", "));
   const config = parsed.data;
@@ -31,13 +36,20 @@ export function createReplayHabitat(paths: HabitatPaths, logger: Logger, options
   const organism = replayOrganism(repository, config.REPLAY_BASELINE_REF);
   const git = new GitOrganism(organism.repositoryPath, organism.baselineRef);
   const store = new HabitatStore(paths.database);
-  const workspace = new GitWorktreeWorkspace(repository, paths.worktrees);
-  const { pathPolicy, evaluators } = replayEvaluators(organism);
-  // Telemetry only counts usage of the Module 1 content of the current baseline.
+  const dependencies = join(repository, "node_modules");
+  const runner = createRunner(runnerKind, dependencies);
+  // In the sandbox the dependencies are mounted read-only; on the host they are linked into each worktree.
+  const workspace = new GitWorktreeWorkspace(repository, paths.worktrees, runnerKind === "sandbox" ? [] : ["node_modules"]);
+  const environment = await ExecutionEnvironment.probe(runner, { dependencies, lockfiles: ["bun.lock"], tools: ["typescript"] }, git);
+  const { pathPolicy, evaluators } = replayEvaluators(organism, runner);
+  // Telemetry only counts usage of the Module 1 content of the current baseline, from the moment it became
+  // the baseline: a candidate commit exists before it is accepted, and usage before acceptance is of older content.
   const since = async (): Promise<number> => {
-    const result = await runCommand(["git", "log", "-1", "--format=%ct", await git.baselineRevision(), "--", M1_CONTENT], { cwd: repository, timeoutMs: 30_000, env: minimalEnv() });
+    const revision = await git.baselineRevision();
+    const result = await runCommand(["git", "log", "-1", "--format=%ct", revision, "--", M1_CONTENT], { cwd: repository, timeoutMs: 30_000, env: minimalEnv() });
     if (result.exitCode !== 0) throw new Error(`git log falhou: ${result.stderr.trim().slice(0, 300)}`);
-    return Number(result.stdout.trim()) * 1000;
+    const accepted = store.events(REPLAY_TTVO_MISSION.id, 1000).find((e) => e.kind === "baseline_advanced" && e.data?.to === revision);
+    return Math.max(Number(result.stdout.trim()) * 1000, accepted?.createdAt ?? 0);
   };
   const habitat = new Habitat(
     {
@@ -49,11 +61,19 @@ export function createReplayHabitat(paths: HabitatPaths, logger: Logger, options
       evaluators,
       mutations: new DirectoryMutationProvider(resolve(paths.root, config.REPLAY_PROPOSALS)),
       telemetry: new ReplayTelemetrySource(resolve(repository, config.REPLAY_EVENTS_DB), since),
-      baselineRevision: () => git.baselineRevision(),
-      advanceBaseline: (from, to) => git.advanceBaseline(from, to),
+      repository: git,
+      environment,
       logger,
     },
     options,
   );
-  return { habitat, store, workspace, organism };
+  return { habitat, store, workspace, organism, runner };
+}
+
+function createRunner(kind: RunnerKind, dependencies: string): CommandRunner {
+  if (kind === "trusted-local") return new TrustedLocalRunner();
+  const reason = LinuxSandboxRunner.unavailable();
+  // Never fall back silently: evidence from an unsandboxed run must be an explicit choice.
+  if (reason) throw new Error(`sandbox indisponível (${reason}); use HABITAT_RUNNER=trusted-local só se todo candidate for confiável`);
+  return new LinuxSandboxRunner(process.execPath, dependencies);
 }

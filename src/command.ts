@@ -19,6 +19,8 @@ export type CommandOptions = {
   timeoutMs: number;
   maxOutputBytes?: number;
   env?: Record<string, string>;
+  /** Called when the command is killed for time or output: lets a runner kill everything the command started. */
+  onKill?: () => void;
 };
 
 const DEFAULT_MAX_OUTPUT = 256 * 1024;
@@ -42,10 +44,12 @@ export async function runCommand(argv: string[], options: CommandOptions): Promi
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill("SIGKILL");
+    options.onKill?.();
   }, options.timeoutMs);
   const onOverflow = (): void => {
     truncated = true;
     proc.kill("SIGKILL");
+    options.onKill?.();
   };
   const [stdout, stderr, exitCode] = await Promise.all([readBounded(proc.stdout, max, onOverflow), readBounded(proc.stderr, max, onOverflow), proc.exited]);
   clearTimeout(timer);

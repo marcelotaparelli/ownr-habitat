@@ -1,10 +1,35 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { z } from "zod";
 import type { Measurement } from "../domain.ts";
 import { deriveVersion } from "../identity.ts";
 import type { TelemetrySource } from "../ports.ts";
 
-type EventRow = { learner_id: string; stage_id: string | null; type: string; data: string | null };
+/**
+ * The organism writes these rows; to Habitat they are raw, untrusted input. Rows that do not match
+ * the expected shape are rejected and counted, never guessed at. Whether the resulting numbers can
+ * prove an outcome is decided by the Mission's evidence policy (source + instrument + sample size).
+ */
+const RawEvent = z.object({
+  learner_id: z.string().min(1).max(200),
+  stage_id: z.string().max(200).nullable(),
+  type: z.string().min(1).max(100),
+  data: z
+    .string()
+    .nullable()
+    .transform((text, ctx) => {
+      if (text === null) return {};
+      try {
+        const value: unknown = JSON.parse(text);
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+      } catch {
+        // Not JSON: reported as an issue below, the row is rejected.
+      }
+      ctx.addIssue({ code: "custom", message: "data não é um objeto JSON" });
+      return z.NEVER;
+    }),
+});
+type EventRow = z.infer<typeof RawEvent>;
 
 const MICRO = /^ops-triage-ai\.m1-(0[1-9]|1\d)$/;
 const CHECKPOINT = "ops-triage-ai.m1-99";
@@ -28,8 +53,8 @@ export class ReplayTelemetrySource implements TelemetrySource {
   async measure(): Promise<Measurement[]> {
     const since = await this.since();
     const window = `desde ${new Date(since).toISOString().slice(0, 16).replace("T", " ")} UTC (conteúdo atual do Module 1)`;
-    const events = this.events(since);
-    const parse = (row: EventRow): Record<string, unknown> => (row.data ? (JSON.parse(row.data) as Record<string, unknown>) : {});
+    const { events, rejected } = this.events(since);
+    const parse = (row: EventRow): Record<string, unknown> => row.data;
 
     const completedTimes = events
       .filter((e) => e.type === "stage_status_changed" && e.stage_id && MICRO.test(e.stage_id) && parse(e).status === "completed")
@@ -69,14 +94,17 @@ export class ReplayTelemetrySource implements TelemetrySource {
       measured("replay.skipped_known_rate", finished ? ratio(skippedKnown, finished) : null, finished, window),
       { metric: "replay.novel_change_success_rate", value: null, status: "INSUFFICIENT_DATA", sampleSize: 0, window, note: "não instrumentado: o Replay ainda não tem etapas de mudança inédita" },
       { metric: "replay.external_escape_rate", value: null, status: "INSUFFICIENT_DATA", sampleSize: 0, window, note: "não instrumentado: saídas para fora do OWNR não são observáveis hoje" },
+      { metric: "telemetry.rejected_events", value: rejected, status: "MEASURED", window, note: "linhas de evento fora do formato esperado, descartadas" },
     ];
   }
 
-  private events(since: number): EventRow[] {
-    if (!existsSync(this.dbPath)) return [];
+  private events(since: number): { events: EventRow[]; rejected: number } {
+    if (!existsSync(this.dbPath)) return { events: [], rejected: 0 };
     const db = new Database(this.dbPath, { readonly: true, strict: true });
     try {
-      return db.query<EventRow, { since: number }>("SELECT learner_id, stage_id, type, data FROM events WHERE created_at >= $since").all({ since });
+      const rows = db.query<unknown, { since: number }>("SELECT learner_id, stage_id, type, data FROM events WHERE created_at >= $since").all({ since });
+      const parsed = rows.map((row) => RawEvent.safeParse(row));
+      return { events: parsed.flatMap((p) => (p.success ? [p.data] : [])), rejected: parsed.filter((p) => !p.success).length };
     } finally {
       db.close();
     }

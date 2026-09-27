@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { FileChange } from "./domain.ts";
 import { minimalEnv, runCommand } from "./command.ts";
-import type { CandidateWorkspace, Workspace } from "./ports.ts";
+import { canonical, sha256 } from "./identity.ts";
+import type { CandidateWorkspace, OrganismRepository, Workspace } from "./ports.ts";
 
 const GIT_TIMEOUT_MS = 60_000;
 
@@ -101,7 +102,7 @@ export class GitWorktreeWorkspace implements CandidateWorkspace {
  * The organism as Habitat sees it: a git repository and the ref that names its baseline.
  * The baseline revision is always read from the organism (`rev-parse <baselineRef>`), never from Habitat.
  */
-export class GitOrganism {
+export class GitOrganism implements OrganismRepository {
   readonly ref: string;
 
   constructor(
@@ -128,6 +129,23 @@ export class GitOrganism {
     const head = await this.git(["symbolic-ref", "--quiet", "HEAD"], [0, 1]);
     if (head.exitCode === 0 && head.stdout.trim() === this.ref) await this.git(["merge", "--ff-only", "--quiet", to]);
     else await this.git(["update-ref", this.ref, to, from]);
+  }
+
+  /** Git blob ids are content hashes: the tree listing of these paths at a revision identifies their content. */
+  async contentHash(revision: string, paths: string[]): Promise<string> {
+    if (paths.length === 0) return sha256("[]").slice(0, 16);
+    const listing = await this.git(["ls-tree", "-r", "--full-tree", revision, "--", ...paths]);
+    const present = listing.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [meta = "", path = ""] = line.split("\t");
+        return [path, meta.split(" ")[2] ?? ""];
+      });
+    const found = new Set(present.map(([path]) => path));
+    const absent = paths.filter((p) => !found.has(p) && !present.some(([path]) => path?.startsWith(`${p}/`))).map((p) => [p, "absent"]);
+    return sha256(canonical([...present, ...absent].sort(([a], [b]) => ((a ?? "") < (b ?? "") ? -1 : 1)))).slice(0, 16);
   }
 
   private async git(args: string[], accept: number[] = [0]): Promise<{ exitCode: number; stdout: string }> {

@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { COMMAND_SOURCE, minimalEnv, runCommand, tail } from "./command.ts";
+import { COMMAND_SOURCE, tail } from "./command.ts";
 import type { EvaluationResult, Evidence, Measurement } from "./domain.ts";
 import { deriveVersion } from "./identity.ts";
 import type { EvaluationContext, Evaluator } from "./ports.ts";
+import type { CommandRunner } from "./runner.ts";
 
 const SYMLINK_MODE = "120000";
 /** This file implements every evaluator below: its content is part of their identity. */
@@ -22,7 +23,7 @@ export class PathPolicyEvaluator implements Evaluator {
 
   async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
     const started = performance.now();
-    const outside = context.changes.filter((c) => !this.allowed.some((pattern) => matches(pattern, c.path)));
+    const outside = context.changes.filter((c) => !pathAllowed(this.allowed, c.path));
     const symlinks = context.changes.filter((c) => c.newMode === SYMLINK_MODE);
     const errors = [
       ...outside.map((c) => `fora dos caminhos permitidos: ${c.path}`),
@@ -39,10 +40,10 @@ export class PathPolicyEvaluator implements Evaluator {
   }
 }
 
-/** Glob subset: "dir/**" (anything below) or an exact path. */
-function matches(pattern: string, path: string): boolean {
+/** Glob subset: "dir/**" (anything below) or an exact path. Paths with ".." or empty segments never match. */
+export function pathAllowed(patterns: string[], path: string): boolean {
   if (path.split("/").some((part) => part === ".." || part === "")) return false;
-  return pattern.endsWith("/**") ? path.startsWith(pattern.slice(0, -2)) : path === pattern;
+  return patterns.some((pattern) => (pattern.endsWith("/**") ? path.startsWith(pattern.slice(0, -2)) : path === pattern));
 }
 
 /**
@@ -56,7 +57,11 @@ export type CommandOutput = "exit-code" | "bun-test" | "probe";
 
 export type CommandEvaluatorConfig = { timeoutMs: number; output: CommandOutput };
 
-/** Runs a command in the evaluated checkout (argv, no shell) and judges only what it can verify. */
+/**
+ * Runs a command in the evaluated checkout (argv, no shell) through a runner — the sandbox, unless the
+ * organism was explicitly configured trusted-local — and judges only what it can verify. The runner is
+ * not part of the evaluator's identity: it is part of the execution environment bound to the evidence.
+ */
 export class CommandEvaluator implements Evaluator {
   readonly version: string;
 
@@ -64,16 +69,26 @@ export class CommandEvaluator implements Evaluator {
     readonly id: string,
     private readonly argv: string[],
     private readonly config: CommandEvaluatorConfig,
+    private readonly runner: CommandRunner,
   ) {
     this.version = deriveVersion([SOURCE, COMMAND_SOURCE], { argv, ...config });
   }
 
   async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
-    const result = await runCommand(this.argv, { cwd: context.dir, timeoutMs: this.config.timeoutMs, env: minimalEnv() });
-    const failure = result.timedOut ? `excedeu ${this.config.timeoutMs} ms` : result.truncated ? "saída excedeu o limite" : result.exitCode === 0 ? null : `código de saída ${result.exitCode}`;
+    const result = await this.runner.run(this.argv, { workspace: context.dir, timeoutMs: this.config.timeoutMs });
+    const failure = result.limit
+      ? `limite de ${result.limit === "memory" ? "memória" : "processos"} do sandbox atingido`
+      : result.timedOut
+        ? `excedeu ${this.config.timeoutMs} ms`
+        : result.truncated
+          ? "saída excedeu o limite"
+          : result.exitCode === 0
+            ? null
+            : `código de saída ${result.exitCode}`;
+    const provenance = { commands: [{ argv: this.argv, runner: this.runner.identity.kind, exitCode: result.exitCode, durationMs: result.durationMs, timedOut: result.timedOut, limit: result.limit }] };
     const command: Evidence = { kind: "command", summary: `${this.argv.join(" ")} → exit ${result.exitCode ?? "—"} em ${result.durationMs} ms`, detail: tail(`${result.stdout}\n${result.stderr}`, 40) };
     const duration: Measurement = { metric: `${this.id}.duration_ms`, value: result.durationMs, status: "MEASURED", unit: "ms" };
-    const base = { evaluatorId: this.id, durationMs: result.durationMs };
+    const base = { evaluatorId: this.id, durationMs: result.durationMs, provenance };
 
     if (this.config.output === "probe") {
       const report = failure ? null : parseProbe(result.stdout);

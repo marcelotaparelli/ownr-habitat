@@ -48,6 +48,15 @@ export interface Evaluator extends EvaluatorIdentity {
   evaluate(context: EvaluationContext): Promise<EvaluationResult>;
 }
 
+/** The organism's repository as the control plane sees it: its baseline, and read access to its content. */
+export interface OrganismRepository {
+  baselineRevision(): Promise<string>;
+  /** Fast-forward only; refuses if the baseline is no longer `from`. */
+  advanceBaseline(from: string, to: string): Promise<void>;
+  /** Content identity of these paths (files or directories) at a revision; absent paths count as absent. */
+  contentHash(revision: string, paths: string[]): Promise<string>;
+}
+
 /** Measurements of the organism in real use (only ever of what is deployed: the baseline). */
 export interface TelemetrySource extends EvaluatorIdentity {
   measure(): Promise<Measurement[]>;

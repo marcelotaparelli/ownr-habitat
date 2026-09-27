@@ -13,7 +13,9 @@ import {
   type Verdict,
 } from "./domain.ts";
 import { notRun } from "./evaluators.ts";
-import type { CandidateWorkspace, Evaluator, MutationProposal, MutationProvider, TelemetrySource } from "./ports.ts";
+import { pathAllowed } from "./evaluators.ts";
+import type { CandidateWorkspace, Evaluator, MutationProposal, MutationProvider, OrganismRepository, TelemetrySource } from "./ports.ts";
+import type { Environment } from "./provenance.ts";
 import { decide, measurementsOf, missionProgress, staleReasons } from "./selection.ts";
 import { sha256 } from "./identity.ts";
 import type { HabitatStore, MissionRecord, Observation } from "./store.ts";
@@ -30,10 +32,10 @@ export type HabitatDeps = {
   evaluators: Evaluator[];
   mutations: MutationProvider;
   telemetry?: TelemetrySource;
-  /** Current revision of the organism (what is in use): the only baseline evidence may be about. */
-  baselineRevision: () => Promise<string>;
-  /** Makes an accepted candidate the new baseline. Must refuse unless the baseline is still `from`. */
-  advanceBaseline: (from: string, to: string) => Promise<void>;
+  /** The organism's own repository: its baseline (what is in use) and read access to its content. */
+  repository: OrganismRepository;
+  /** Identity of the execution environment for a revision (runtime, runner/sandbox, dependencies). */
+  environment: { at(revision: string): Promise<Environment> };
   logger: Logger;
 };
 
@@ -71,6 +73,8 @@ export class Habitat {
   ) {
     this.missionRecord = options.reviseMissionBy ? deps.store.reviseMission(deps.mission, options.reviseMissionBy) : deps.store.ensureMission(deps.mission);
     this.mission = this.missionRecord.mission;
+    const problems = configurationProblems(deps, this.mission);
+    if (problems.length > 0) throw new Error(`configuração do Habitat recusada:\n- ${problems.join("\n- ")}`);
   }
 
   get running(): string | null {
@@ -79,13 +83,17 @@ export class Habitat {
 
   /** The facts every piece of evidence is checked against right now. */
   async context(): Promise<EvidenceContext> {
+    const baselineRevision = await this.deps.repository.baselineRevision();
+    const environment = await this.deps.environment.at(baselineRevision);
+    this.deps.store.saveEnvironment(environment);
     return {
-      baselineRevision: await this.deps.baselineRevision(),
+      baselineRevision,
       missionId: this.mission.id,
       missionRevision: this.missionRecord.revision,
       missionHash: this.missionRecord.hash,
       envelopeHash: sha256(JSON.stringify(this.mission.envelope)),
       evaluators: [this.deps.pathPolicy, ...this.deps.evaluators].map(fingerprint).sort(),
+      environment: environment.hash,
     };
   }
 
@@ -95,20 +103,19 @@ export class Habitat {
       const context = await this.context();
       const revision = context.baselineRevision;
       const observation = store.addObservation(this.mission.id, revision);
-      const bind = (evaluator: string): EvidenceBinding => this.binding(context, revision, evaluator);
       // The baseline is measured in its own worktree too: the live checkout is never an evaluation target.
       const workspace = await this.deps.workspace.prepare(observation.id, revision);
       const evaluations: EvaluationResult[] = [];
       try {
         for (const evaluator of this.deps.evaluators) {
-          const result = { ...(await this.safely(evaluator, { dir: workspace.dir, baselineRevision: revision, revision, changes: [] })), binding: bind(fingerprint(evaluator)) };
+          const result = await this.seal(await this.safely(evaluator, { dir: workspace.dir, baselineRevision: revision, revision, changes: [] }), evaluator, context, revision);
           store.addEvaluation("observation", observation.id, result);
           evaluations.push(result);
         }
       } finally {
         await this.deps.workspace.dispose(workspace);
       }
-      const telemetry = { ...(await this.telemetry()), binding: bind(this.deps.telemetry ? fingerprint(this.deps.telemetry) : "telemetry@none") };
+      const telemetry = await this.seal(await this.telemetry(), this.deps.telemetry ?? { id: "telemetry", version: "none" }, context, revision);
       store.addEvaluation("observation", observation.id, telemetry);
       evaluations.push(telemetry);
       store.record("observation_recorded", {
@@ -158,7 +165,7 @@ export class Habitat {
   /** The same change, replayed onto the current baseline and judged again from scratch. */
   async reevaluate(candidateId: string): Promise<{ candidate: Candidate; decision: Decision }> {
     return this.exclusive(`reevaluate:${candidateId}`, async () => {
-      const old = this.deps.store.candidate(candidateId);
+      const old = this.ownCandidate(candidateId);
       if (!old?.revision) throw new HabitatRefusal("UNKNOWN", `candidate ${candidateId} has no evaluated revision`);
       const patch = await this.deps.workspace.patchBetween(old.parentRevision, old.revision);
       const { claims } = old;
@@ -208,14 +215,13 @@ export class Habitat {
       store.updateCandidate(candidate.id, { status: "evaluating" });
       store.record("candidate_evaluation_started", { missionId: this.mission.id, candidateId: candidate.id });
       const evaluationContext = { dir: workspace.dir, baselineRevision: context.baselineRevision, revision: mutated.revision, changes: mutated.changes };
-      const bind = (evaluator: Evaluator): EvidenceBinding => this.binding(context, mutated.revision, fingerprint(evaluator));
       const evaluations: EvaluationResult[] = [];
-      const policy = { ...(await this.safely(this.deps.pathPolicy, evaluationContext)), binding: bind(this.deps.pathPolicy) };
+      const policy = await this.seal(await this.safely(this.deps.pathPolicy, evaluationContext), this.deps.pathPolicy, context, mutated.revision);
       evaluations.push(policy);
       for (const evaluator of this.deps.evaluators) {
-        // A candidate outside its allowed paths may have tampered with tests or evaluators: run none of its code.
+        // A candidate outside its allowed paths may have tampered with tests or instruments: run none of its code.
         const result = policy.status === "PASS" ? await this.safely(evaluator, evaluationContext) : notRun(evaluator.id, "não executado: o candidate violou a política de caminhos");
-        evaluations.push({ ...result, binding: bind(evaluator) });
+        evaluations.push(await this.seal(result, evaluator, context, mutated.revision));
       }
       evaluations.forEach((e) => store.addEvaluation("candidate", candidate.id, e));
 
@@ -230,6 +236,7 @@ export class Habitat {
           missionHash: context.missionHash,
           envelopeHash: context.envelopeHash,
           evaluators: context.evaluators,
+          environment: context.environment,
         },
       };
       store.saveDecision(candidate.id, decision);
@@ -259,6 +266,7 @@ export class Habitat {
   /** The recorded verdict, unless the evidence no longer describes the present — then STALE. */
   async assess(candidateId: string, context?: EvidenceContext): Promise<CandidateAssessment> {
     const { store } = this.deps;
+    if (!this.ownCandidate(candidateId)) return { verdict: null, recordedVerdict: null, stale: [] };
     const decision = store.decision(candidateId);
     if (!decision) return { verdict: null, recordedVerdict: null, stale: [] };
     // An accepted candidate is part of the baseline's history, not a pending decision.
@@ -274,14 +282,14 @@ export class Habitat {
   async accept(candidateId: string, by: string): Promise<{ from: string; to: string }> {
     return this.exclusive(`accept:${candidateId}`, async () => {
       const { store } = this.deps;
-      const candidate = store.candidate(candidateId);
+      const candidate = this.ownCandidate(candidateId);
       if (!candidate?.revision) throw new HabitatRefusal("UNKNOWN", `unknown candidate ${candidateId}`);
       const { verdict, stale } = await this.assess(candidateId);
       if (stale.length > 0) throw new HabitatRefusal("STALE_EVIDENCE", `evidência desatualizada — reavalie antes de aceitar: ${stale.join("; ")}`);
       if (candidate.status !== "evaluated" || !verdict || !ACCEPTABLE.has(verdict)) {
         throw new HabitatRefusal("NOT_ACCEPTABLE", `candidate ${candidateId} está ${verdict ?? candidate.status}; só ${[...ACCEPTABLE].join(", ")} pode virar baseline`);
       }
-      await this.deps.advanceBaseline(candidate.parentRevision, candidate.revision);
+      await this.deps.repository.advanceBaseline(candidate.parentRevision, candidate.revision);
       store.updateCandidate(candidateId, { status: "accepted" });
       store.record("candidate_accepted", { missionId: this.mission.id, candidateId, data: { by, verdict } });
       store.record("baseline_advanced", { missionId: this.mission.id, candidateId, data: { from: candidate.parentRevision, to: candidate.revision, by } });
@@ -293,7 +301,7 @@ export class Habitat {
   /** Where the organism stands: the latest baseline observation against the desired state. */
   progress() {
     const observation = this.deps.store.latestObservation(this.mission.id);
-    const measurements = observation ? measurementsOf(this.deps.store.evaluations("observation", observation.id)) : new Map<string, Measurement>();
+    const measurements = observation ? measurementsOf(this.deps.store.evaluations("observation", observation.id), this.mission.evidence) : new Map<string, Measurement>();
     return { observation, progress: missionProgress(this.mission, measurements) };
   }
 
@@ -304,10 +312,36 @@ export class Habitat {
     const evaluations = this.deps.store.evaluations("observation", observation.id);
     const current = new Set(context.evaluators);
     const outdated = evaluations.filter(
-      (e) => e.evaluatorId !== "telemetry" && (!e.binding || e.binding.missionHash !== context.missionHash || e.binding.envelopeHash !== context.envelopeHash || !current.has(e.binding.evaluator)),
+      (e) =>
+        !e.binding ||
+        e.binding.missionHash !== context.missionHash ||
+        e.binding.envelopeHash !== context.envelopeHash ||
+        e.binding.environment !== context.environment ||
+        (e.evaluatorId !== "telemetry" && !current.has(e.binding.evaluator)),
     );
-    if (outdated.length > 0) throw new HabitatRefusal("BASELINE_NOT_OBSERVED", `a observação ${observation.id} usa missão ou avaliadores antigos (${outdated.map((e) => e.evaluatorId).join(", ")}); observe de novo`);
+    if (outdated.length > 0) throw new HabitatRefusal("BASELINE_NOT_OBSERVED", `a observação ${observation.id} usa missão ou avaliadores antigos (${outdated.map((e) => e.evaluatorId).join(", ")}) ou outro ambiente de execução; observe de novo`);
     return { observation, evaluations };
+  }
+
+  /**
+   * Binds a result to what it is about (baseline, evaluated revision, mission, envelope, evaluator
+   * identity, execution environment) and records the identity of the instrument that measured it:
+   * the content of the organism files the Mission declares for that source, at that revision.
+   */
+  private async seal(result: EvaluationResult, evaluator: { id: string; version: string }, context: EvidenceContext, subjectRevision: string): Promise<EvaluationResult> {
+    const paths = this.mission.evidence.instruments[evaluator.id];
+    const instrument = paths ? await this.deps.repository.contentHash(subjectRevision, paths) : undefined;
+    return {
+      ...result,
+      binding: this.binding(context, subjectRevision, fingerprint(evaluator)),
+      provenance: { commands: result.provenance?.commands ?? [], ...(instrument ? { instrument } : {}) },
+    };
+  }
+
+  /** Candidates of other missions (other organisms sharing the recorder) do not exist for this Habitat. */
+  private ownCandidate(candidateId: string): Candidate | undefined {
+    const candidate = this.deps.store.candidate(candidateId);
+    return candidate?.missionId === this.mission.id ? candidate : undefined;
   }
 
   private binding(context: EvidenceContext, subjectRevision: string, evaluator: string): EvidenceBinding {
@@ -319,6 +353,7 @@ export class Habitat {
       missionHash: context.missionHash,
       envelopeHash: context.envelopeHash,
       evaluator,
+      environment: context.environment,
     };
   }
 
@@ -357,4 +392,19 @@ export class Habitat {
       this.busy = null;
     }
   }
+}
+
+/**
+ * A Habitat refuses to start when its configuration would let evidence be forged: the mission must
+ * belong to this organism, every trusted source must exist, and no instrument may be editable by candidates.
+ */
+function configurationProblems(deps: HabitatDeps, mission: Mission): string[] {
+  const problems: string[] = [];
+  if (mission.organismId !== deps.organism.id) problems.push(`a missão ${mission.id} é do organismo ${mission.organismId}, não de ${deps.organism.id}`);
+  const known = new Set([deps.pathPolicy.id, ...deps.evaluators.map((e) => e.id), ...(deps.telemetry ? [deps.telemetry.id] : [])]);
+  for (const [metric, source] of Object.entries(mission.evidence.sources)) if (!known.has(source)) problems.push(`fonte ${source} de ${metric} não existe neste Habitat`);
+  for (const [source, paths] of Object.entries(mission.evidence.instruments)) {
+    for (const path of paths) if (pathAllowed(deps.organism.allowedPaths, path)) problems.push(`o instrumento de ${source} (${path}) está dentro dos caminhos que candidates podem alterar`);
+  }
+  return problems;
 }

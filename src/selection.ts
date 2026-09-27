@@ -14,6 +14,7 @@ import type {
   Mission,
   Operator,
   Envelope,
+  EvidencePolicy,
   Verdict,
 } from "./domain.ts";
 
@@ -29,15 +30,28 @@ export function satisfies(value: number, operator: Operator, target: number): bo
   return value === target;
 }
 
-export function measurementsOf(evaluations: EvaluationResult[]): Map<string, Measurement> {
+/**
+ * The measurements the Mission trusts: a metric counts only when its declared source produced it.
+ * The same metric emitted by any other evaluator (an organism instrument, a candidate's output) is ignored.
+ */
+export function measurementsOf(evaluations: EvaluationResult[], policy: Pick<EvidencePolicy, "sources">): Map<string, Measurement> {
   const map = new Map<string, Measurement>();
-  for (const evaluation of evaluations) for (const m of evaluation.measurements) map.set(m.metric, m);
+  for (const evaluation of evaluations) {
+    for (const m of evaluation.measurements) if (policy.sources[m.metric] === evaluation.evaluatorId) map.set(m.metric, m);
+  }
   return map;
 }
 
-export function checkEnvelope(envelope: Envelope, evaluations: EvaluationResult[]): ConstraintResult[] {
+/** Measurements of Mission metrics that came from somewhere other than their trusted source. */
+export function untrustedMeasurements(evaluations: EvaluationResult[], policy: Pick<EvidencePolicy, "sources">): string[] {
+  return evaluations.flatMap((e) =>
+    e.measurements.filter((m) => policy.sources[m.metric] !== undefined && policy.sources[m.metric] !== e.evaluatorId).map((m) => `${m.metric} emitida por ${e.evaluatorId} (fonte confiável: ${policy.sources[m.metric]})`),
+  );
+}
+
+export function checkEnvelope(envelope: Envelope, evaluations: EvaluationResult[], policy: Pick<EvidencePolicy, "sources">): ConstraintResult[] {
   const byEvaluator = new Map(evaluations.map((e) => [e.evaluatorId, e]));
-  const measurements = measurementsOf(evaluations);
+  const measurements = measurementsOf(evaluations, policy);
   return envelope.constraints.map((c) => checkConstraint(c, byEvaluator.get(c.evaluatorId), measurements));
 }
 
@@ -68,19 +82,41 @@ export function checkGuards(fitness: Fitness, measurements: Map<string, Measurem
 const enough = (m: Measurement | undefined, min: number | undefined): boolean =>
   m !== undefined && m.status === "MEASURED" && m.value !== null && (min === undefined || (m.sampleSize ?? 0) >= min);
 
-export function compareObjectives(fitness: Fitness, baseline: Map<string, Measurement>, candidate: Map<string, Measurement>): MetricComparison[] {
+/** The instrument hash each side's source reported; a comparison needs the same instrument on both sides. */
+const instrumentOf = (evaluations: EvaluationResult[], source: string | undefined): string | undefined => evaluations.find((e) => e.evaluatorId === source)?.provenance?.instrument;
+
+export function compareObjectives(
+  fitness: Fitness,
+  policy: EvidencePolicy,
+  baseline: EvaluationResult[],
+  candidate: EvaluationResult[],
+): MetricComparison[] {
+  const before = measurementsOf(baseline, policy);
+  const after = measurementsOf(candidate, policy);
   return fitness.objectives.map((o) => {
-    const b = baseline.get(o.metric);
-    const c = candidate.get(o.metric);
-    const before = b?.value ?? null;
-    const after = c?.value ?? null;
-    const base = { metric: o.metric, label: o.label, kind: o.kind, direction: o.direction, baseline: before, candidate: after };
-    if (o.kind === "outcome" && !(enough(b, o.minSampleSize) && enough(c, o.minSampleSize))) return { ...base, outcome: "insufficient_data" };
-    if (before === null || after === null) return { ...base, outcome: "unknown" };
-    const better = o.direction === "minimize" ? after < before : after > before;
-    const worse = o.direction === "minimize" ? after > before : after < before;
-    return { ...base, outcome: better ? "improved" : worse ? "worse" : "unchanged" };
+    const source = policy.sources[o.metric];
+    if (source && policy.instruments[source]) {
+      const a = instrumentOf(baseline, source);
+      const b = instrumentOf(candidate, source);
+      const values = { metric: o.metric, label: o.label, kind: o.kind, direction: o.direction, baseline: before.get(o.metric)?.value ?? null, candidate: after.get(o.metric)?.value ?? null };
+      // Values measured by different instruments (or by an unidentified one) are not comparable.
+      if (values.baseline !== null && values.candidate !== null && (!a || !b || a !== b)) return { ...values, outcome: "untrusted" as const };
+    }
+    return compareOne(o, before, after);
   });
+}
+
+function compareOne(o: Fitness["objectives"][number], baseline: Map<string, Measurement>, candidate: Map<string, Measurement>): MetricComparison {
+  const b = baseline.get(o.metric);
+  const c = candidate.get(o.metric);
+  const before = b?.value ?? null;
+  const after = c?.value ?? null;
+  const base = { metric: o.metric, label: o.label, kind: o.kind, direction: o.direction, baseline: before, candidate: after };
+  if (o.kind === "outcome" && !(enough(b, o.minSampleSize) && enough(c, o.minSampleSize))) return { ...base, outcome: "insufficient_data" };
+  if (before === null || after === null) return { ...base, outcome: "unknown" };
+  const better = o.direction === "minimize" ? after < before : after > before;
+  const worse = o.direction === "minimize" ? after > before : after < before;
+  return { ...base, outcome: better ? "improved" : worse ? "worse" : "unchanged" };
 }
 
 /**
@@ -92,13 +128,14 @@ export function compareObjectives(fitness: Fitness, baseline: Map<string, Measur
  * 6. Only proxies improved ⇒ EXPERIMENT_READY when the envelope is fully green and every proxy was compared,
  *    PROXY_IMPROVED otherwise. SOFT violations are warnings: they never make a candidate better.
  */
-export function decide(mission: Pick<Mission, "envelope" | "fitness" | "desiredState">, baseline: EvaluationResult[], candidate: EvaluationResult[]): Decision {
-  const constraints = checkEnvelope(mission.envelope, candidate);
-  const candidateMeasurements = measurementsOf(candidate);
+export function decide(mission: Pick<Mission, "envelope" | "fitness" | "desiredState" | "evidence">, baseline: EvaluationResult[], candidate: EvaluationResult[]): Decision {
+  const policy = mission.evidence;
+  const constraints = checkEnvelope(mission.envelope, candidate, policy);
+  const candidateMeasurements = measurementsOf(candidate, policy);
   const guards = checkGuards(mission.fitness, candidateMeasurements);
-  const comparisons = compareObjectives(mission.fitness, measurementsOf(baseline), candidateMeasurements);
+  const comparisons = compareObjectives(mission.fitness, policy, baseline, candidate);
   const warnings = constraints.filter((c) => c.severity === "soft" && c.status !== "PASS").map((c) => `SOFT ${c.name}: ${c.status} — ${c.detail}`);
-  const reasons: string[] = [];
+  const reasons: string[] = untrustedMeasurements(candidate, policy).map((m) => `medida não confiável ignorada: ${m}`);
   const result = (verdict: Verdict): Decision => ({ verdict, constraints, comparisons, guards, warnings, reasons, binding: null });
 
   const hardBlocked = constraints.filter((c) => c.severity === "hard" && c.status !== "PASS");
@@ -123,10 +160,10 @@ export function decide(mission: Pick<Mission, "envelope" | "fitness" | "desiredS
   }
   if (improved.length === 0) return result("NEUTRAL");
 
-  const unknownProxies = comparisons.filter((c) => c.kind === "proxy" && c.outcome === "unknown");
+  const unknownProxies = comparisons.filter((c) => c.kind === "proxy" && (c.outcome === "unknown" || c.outcome === "untrusted"));
   for (const c of unknownProxies) reasons.push(`proxy sem comparação: ${c.label}`);
   if (warnings.length > 0 || unknownProxies.length > 0) return result("PROXY_IMPROVED");
-  const pending = comparisons.filter((c) => c.outcome === "insufficient_data");
+  const pending = comparisons.filter((c) => c.outcome === "insufficient_data" || c.outcome === "untrusted");
   if (pending.length > 0) reasons.push(`outcomes ainda sem dados suficientes (${pending.map((c) => c.label).join(", ")}): só um experimento em uso real pode confirmar`);
   return result("EXPERIMENT_READY");
 }
@@ -140,6 +177,7 @@ export function staleReasons(binding: DecisionBinding | null, evaluations: Evalu
     reasons.push(`a missão mudou (revisão ${binding.missionRevision} → ${current.missionRevision})`);
   }
   if (binding.envelopeHash !== current.envelopeHash) reasons.push("o envelope mudou");
+  if (binding.environment !== current.environment) reasons.push(`o ambiente de execução mudou (${binding.environment.slice(0, 10) || "desconhecido"} → ${current.environment.slice(0, 10)})`);
   const now = new Set(current.evaluators);
   const changed = binding.evaluators.filter((e) => !now.has(e));
   if (changed.length > 0 || binding.evaluators.length !== current.evaluators.length) reasons.push(`avaliadores mudaram: ${changed.join(", ") || "conjunto diferente"}`);
@@ -150,7 +188,8 @@ export function staleReasons(binding: DecisionBinding | null, evaluations: Evalu
       e.binding.baselineRevision !== binding.baselineRevision ||
       e.binding.subjectRevision !== binding.candidateRevision ||
       e.binding.missionHash !== binding.missionHash ||
-      e.binding.envelopeHash !== binding.envelopeHash,
+      e.binding.envelopeHash !== binding.envelopeHash ||
+      e.binding.environment !== binding.environment,
   );
   if (unbound.length > 0) reasons.push(`evidência não vinculada a esta decisão: ${unbound.map((e) => e.evaluatorId).join(", ")}`);
   return reasons;

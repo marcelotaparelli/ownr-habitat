@@ -39,6 +39,17 @@ export type EvidenceBinding = {
   missionHash: string;
   envelopeHash: string;
   evaluator: string;
+  /** Hash of the execution environment (runtime, runner/sandbox, dependencies) that produced the evidence. */
+  environment: string;
+};
+
+/** A command as it was executed to produce evidence. */
+export type CommandRecord = { argv: string[]; runner: string; exitCode: number | null; durationMs: number; timedOut: boolean; limit: "memory" | "pids" | null };
+
+export type Provenance = {
+  commands: CommandRecord[];
+  /** Hash of the organism files that implement this measurement, at the evaluated revision (see Mission.evidence). */
+  instrument?: string;
 };
 
 export type EvaluationResult = {
@@ -50,6 +61,8 @@ export type EvaluationResult = {
   errors: string[];
   /** Attached by Habitat when the result is recorded; absent on legacy evidence (which is therefore stale). */
   binding?: EvidenceBinding;
+  /** How the evidence was produced: commands run and the identity of the instrument that measured. */
+  provenance?: Provenance;
 };
 
 // ---------------------------------------------------------------- mission, envelope, fitness
@@ -115,15 +128,44 @@ export type Guard = z.infer<typeof Guard>;
 export const Fitness = z.strictObject({ objectives: z.array(Objective).min(1), guards: z.array(Guard) });
 export type Fitness = z.infer<typeof Fitness>;
 
-export const Mission = z.strictObject({
-  id: z.string().min(1),
-  organismId: z.string().min(1),
-  objective: z.string().min(1),
-  desiredState: z.array(DesiredMetric).min(1),
-  fitness: Fitness,
-  envelope: Envelope,
-  status: z.enum(["draft", "active", "paused", "reached", "failed"]),
+/**
+ * Which evidence the Mission trusts. Raw measurements are not evidence: a metric counts only when it
+ * comes from its declared source, and a comparison counts only when that source's instrument (the
+ * organism files that implement the measurement) is byte-identical on both sides.
+ */
+export const EvidencePolicy = z.strictObject({
+  /** metric → the only evaluator (or telemetry source) trusted to measure it. */
+  sources: z.record(z.string().min(1), z.string().min(1)),
+  /** source → organism files implementing its measurement. They must lie outside the organism's allowed paths. */
+  instruments: z.record(z.string().min(1), z.array(z.string().min(1)).min(1)),
 });
+export type EvidencePolicy = z.infer<typeof EvidencePolicy>;
+
+export const Mission = z
+  .strictObject({
+    id: z.string().min(1),
+    organismId: z.string().min(1),
+    objective: z.string().min(1),
+    desiredState: z.array(DesiredMetric).min(1),
+    fitness: Fitness,
+    envelope: Envelope,
+    evidence: EvidencePolicy,
+    status: z.enum(["draft", "active", "paused", "reached", "failed"]),
+  })
+  .superRefine((mission, ctx) => {
+    const referenced = [
+      ...mission.desiredState.map((d) => d.metric),
+      ...mission.fitness.objectives.map((o) => o.metric),
+      ...mission.fitness.guards.map((g) => g.metric),
+      ...mission.envelope.constraints.flatMap((c) => (c.metric ? [c.metric] : [])),
+    ];
+    for (const metric of new Set(referenced)) {
+      if (!mission.evidence.sources[metric]) ctx.addIssue({ code: "custom", path: ["evidence", "sources", metric], message: `metric ${metric} has no trusted source` });
+    }
+    for (const c of mission.envelope.constraints) {
+      if (c.metric && mission.evidence.sources[c.metric] !== c.evaluatorId) ctx.addIssue({ code: "custom", path: ["envelope", c.id], message: `constraint ${c.id} reads ${c.metric} from ${c.evaluatorId}, but its trusted source is ${mission.evidence.sources[c.metric]}` });
+    }
+  });
 export type Mission = z.infer<typeof Mission>;
 
 export type Organism = {
@@ -182,8 +224,11 @@ export type MetricComparison = {
   direction: "minimize" | "maximize";
   baseline: number | null;
   candidate: number | null;
-  /** insufficient_data: an outcome whose sample is below the objective's minimum on either side. */
-  outcome: "improved" | "worse" | "unchanged" | "unknown" | "insufficient_data";
+  /**
+   * insufficient_data: an outcome whose sample is below the objective's minimum on either side.
+   * untrusted: the instrument that measures it differs between the two sides, so the values are not comparable.
+   */
+  outcome: "improved" | "worse" | "unchanged" | "unknown" | "insufficient_data" | "untrusted";
 };
 
 export type GuardResult = Guard & { value: number | null; status: CheckStatus };
@@ -199,6 +244,8 @@ export type DecisionBinding = {
   envelopeHash: string;
   /** Sorted fingerprints of the evaluators whose evidence the decision used. */
   evaluators: string[];
+  /** Execution environment of both sides of the comparison (they must be the same). */
+  environment: string;
 };
 
 /** The facts a binding is checked against right now. */

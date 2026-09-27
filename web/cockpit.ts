@@ -17,6 +17,7 @@ type CandidateDetail = {
   baselineEvaluations: EvaluationResult[];
   decision: Decision | null;
   diff: string | null;
+  environment: Record<string, unknown> | null;
   events: HabitatEvent[];
 };
 
@@ -75,7 +76,8 @@ async function act(run: () => Promise<unknown>): Promise<void> {
 function render(): void {
   if (!state) return;
   const s = state;
-  $("#organism").textContent = `${s.organism.name} (${s.organism.repositoryPath} @ ${s.organism.baselineRef} = ${short(s.context.baselineRevision)}) · missão ${s.mission.id} (revisão ${s.context.missionRevision})`;
+  const runner = s.environment?.["runner"] as { kind?: string } | undefined;
+  $("#organism").textContent = `${s.organism.name} (${s.organism.repositoryPath} @ ${s.organism.baselineRef} = ${short(s.context.baselineRevision)}) · missão ${s.mission.id} (revisão ${s.context.missionRevision}) · runner ${runner?.kind ?? "?"}`;
   const running = $("#running");
   running.hidden = !s.running;
   running.textContent = s.running ? `executando ${s.running}…` : "";
@@ -278,8 +280,10 @@ async function renderCandidate(id: string): Promise<void> {
                       `missão     ${decision.binding.missionId} rev ${decision.binding.missionRevision} ${decision.binding.missionHash.slice(0, 16)}`,
                       `envelope   ${decision.binding.envelopeHash.slice(0, 16)}`,
                       ...decision.binding.evaluators.map((e) => `avaliador  ${e}`),
+                      `ambiente   ${decision.binding.environment}`,
                     ].join("\n"),
                   ),
+                  d.environment ? h("pre", {}, JSON.stringify(d.environment, null, 2)) : null,
                 )
               : null,
           ]
@@ -292,7 +296,9 @@ async function renderCandidate(id: string): Promise<void> {
           h("summary", {}, badge(e.status), ` ${e.evaluatorId} · ${e.durationMs} ms`, e.errors[0] ? h("span", { class: "muted" }, ` — ${e.errors[0]}`) : null),
           e.measurements.length ? h("table", {}, e.measurements.map((m) => h("tr", {}, h("td", { class: "mono" }, m.metric), h("td", { class: "num" }, fmt(m)), h("td", {}, m.status === "MEASURED" ? "" : badge(m.status))))) : null,
           e.evidence.map((ev) => [h("p", {}, ev.summary), ev.detail ? h("pre", {}, ev.detail) : null]),
-          e.binding ? h("p", { class: "muted mono" }, `${e.binding.evaluator} · ${short(e.binding.baselineRevision)} → ${short(e.binding.subjectRevision)}`) : h("p", { class: "error" }, "sem vínculo de evidência"),
+          e.binding ? h("p", { class: "muted mono" }, `${e.binding.evaluator} · ${short(e.binding.baselineRevision)} → ${short(e.binding.subjectRevision)} · ambiente ${e.binding.environment}`) : h("p", { class: "error" }, "sem vínculo de evidência"),
+          e.provenance?.instrument ? h("p", { class: "muted mono" }, `instrumento ${e.provenance.instrument}`) : null,
+          (e.provenance?.commands ?? []).map((c) => h("p", { class: "muted mono" }, `$ ${c.argv.join(" ")} · ${c.runner} · exit ${c.exitCode ?? "—"} · ${c.durationMs} ms${c.limit ? ` · limite ${c.limit}` : ""}${c.timedOut ? " · timeout" : ""}`)),
         ),
       ),
       h("h3", {}, `Arquivos alterados (${d.changes.length})`),

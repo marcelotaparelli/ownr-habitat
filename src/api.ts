@@ -35,6 +35,7 @@ export async function snapshot({ habitat, store, organism }: Pick<HabitatDeps, "
     organism: { id: organism.id, name: organism.name, repositoryPath: organism.repositoryPath, baselineRef: organism.baselineRef, allowedPaths: organism.allowedPaths },
     mission: { ...mission, reached: missionReached(progress) },
     context,
+    environment: store.environment(context.environment) ?? null,
     progress,
     baseline: observation ? { ...observation, current: observation.revision === context.baselineRevision, evaluations: store.evaluations("observation", observation.id) } : null,
     baselines,
@@ -83,7 +84,8 @@ export function createHabitatApi(deps: HabitatDeps): Router {
     })
     .on("GET", "/api/candidates/:id", async (_req, { id = "" }) => {
       const candidate = store.candidate(id);
-      if (!candidate) throw new HttpError(404, "UNKNOWN_CANDIDATE", "Candidate não encontrado.");
+      // Candidates of other organisms sharing the recorder are not visible here.
+      if (!candidate || candidate.missionId !== habitat.mission.id) throw new HttpError(404, "UNKNOWN_CANDIDATE", "Candidate não encontrado.");
       const decision = store.decision(id) ?? null;
       const baselineId = decision?.binding?.baselineObservationId;
       return json({
@@ -95,12 +97,14 @@ export function createHabitatApi(deps: HabitatDeps): Router {
         decision,
         // The retained revision outlives the worktree: every candidate stays inspectable.
         diff: candidate.revision ? (await workspace.diff(candidate.parentRevision, candidate.revision)).slice(0, 200_000) : null,
-        events: store.events(500).filter((e) => e.candidateId === id).reverse(),
+        environment: decision?.binding ? (store.environment(decision.binding.environment) ?? null) : null,
+        events: store.events(habitat.mission.id, 500).filter((e) => e.candidateId === id).reverse(),
       });
     })
     .on("POST", "/api/candidates/:id/reevaluate", async (req, { id = "" }) => {
       await readBody(req, Empty);
-      if (!store.candidate(id)?.revision) throw new HttpError(404, "UNKNOWN_CANDIDATE", "Candidate não encontrado.");
+      const own = store.candidate(id);
+      if (!own?.revision || own.missionId !== habitat.mission.id) throw new HttpError(404, "UNKNOWN_CANDIDATE", "Candidate não encontrado.");
       await needCurrentBaseline();
       return start(`reevaluate:${id}`, () => habitat.reevaluate(id));
     })
@@ -114,5 +118,5 @@ export function createHabitatApi(deps: HabitatDeps): Router {
         throw error;
       }
     })
-    .on("GET", "/api/events", () => json({ events: store.events(300) }));
+    .on("GET", "/api/events", () => json({ events: store.events(habitat.mission.id, 300) }));
 }

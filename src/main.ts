@@ -24,6 +24,8 @@ const Env = z.object({
   HABITAT_WORKTREES: z.string().min(1).default(join(homedir(), ".cache/ownr-habitat/worktrees")),
   /** Which organism adapter to load. Only one exists today. */
   HABITAT_ORGANISM: z.enum(["replay"]).default("replay"),
+  /** sandbox: isolated execution (default). trusted-local: host execution, explicit opt-in, NOT a security boundary. */
+  HABITAT_RUNNER: z.enum(["sandbox", "trusted-local"]).default("sandbox"),
 });
 const parsed = Env.safeParse(process.env);
 if (!parsed.success) throw new Error("Invalid Habitat configuration: " + parsed.error.issues.map((i) => i.path.join(".")).join(", "));
@@ -39,7 +41,7 @@ const by = flag("--by");
 if ((command === "accept" || command === "revise-mission") && (!by || by.trim().length < 2)) throw new Error(`${command} exige --by <nome de quem decide>`);
 
 const paths = { root, database: resolve(root, config.HABITAT_DB), worktrees: resolve(root, config.HABITAT_WORKTREES) };
-const deps = { ...createReplayHabitat(paths, logger, command === "revise-mission" && by ? { reviseMissionBy: by } : {}), logger };
+const deps = { ...(await createReplayHabitat(paths, config.HABITAT_RUNNER, logger, command === "revise-mission" && by ? { reviseMissionBy: by } : {})), logger };
 
 async function cockpitAssets(): Promise<Map<string, Asset>> {
   const dir = join(root, "web");
@@ -63,7 +65,7 @@ switch (command) {
   case "serve": {
     // Loopback only: this server can start commands on the host and move the baseline branch.
     const server = Bun.serve({ hostname: "127.0.0.1", port: config.HABITAT_PORT, fetch: createApp(createHabitatApi(deps), await cockpitAssets(), logger) });
-    logger.info("habitat_started", { url: server.url.toString(), organism: deps.organism.id, repository: deps.organism.repositoryPath, baselineRef: deps.organism.baselineRef, mission: deps.habitat.mission.id });
+    logger.info("habitat_started", { url: server.url.toString(), organism: deps.organism.id, repository: deps.organism.repositoryPath, baselineRef: deps.organism.baselineRef, mission: deps.habitat.mission.id, runner: deps.runner.identity.kind });
     const shutdown = (): void => {
       server.stop();
       deps.store.close();

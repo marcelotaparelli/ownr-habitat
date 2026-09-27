@@ -13,7 +13,7 @@ import {
 } from "./domain.ts";
 import { sha256 } from "./identity.ts";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS missions (
@@ -87,6 +87,12 @@ CREATE TABLE IF NOT EXISTS assessments (
   detail         TEXT NOT NULL,
   created_at     INTEGER NOT NULL
 );
+-- Execution environments evidence was produced in (runtime, runner, dependencies), by hash.
+CREATE TABLE IF NOT EXISTS environments (
+  hash       TEXT PRIMARY KEY,
+  detail     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 -- The flight recorder: append-only, one row per thing that happened.
 CREATE TABLE IF NOT EXISTS habitat_events (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +102,7 @@ CREATE TABLE IF NOT EXISTS habitat_events (
   data         TEXT,
   created_at   INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS events_by_mission ON habitat_events (mission_id, id);
 `;
 
 /**
@@ -148,6 +155,14 @@ const EvaluationRow = z.object({
   evidence: z.array(z.object({ kind: z.enum(["command", "files", "report", "note"]), summary: z.string(), detail: z.string().exactOptional() })),
   durationMs: z.number(),
   errors: z.array(z.string()),
+  provenance: z
+    .object({
+      commands: z.array(
+        z.object({ argv: z.array(z.string()), runner: z.string(), exitCode: z.number().nullable(), durationMs: z.number(), timedOut: z.boolean(), limit: z.enum(["memory", "pids"]).nullable() }),
+      ),
+      instrument: z.string().exactOptional(),
+    })
+    .exactOptional(),
 });
 const BindingRow = z.object({
   baselineRevision: z.string(),
@@ -157,6 +172,8 @@ const BindingRow = z.object({
   missionHash: z.string(),
   envelopeHash: z.string(),
   evaluator: z.string(),
+  /** Evidence recorded before execution provenance has no environment: it can never match a current one. */
+  environment: z.string().default(""),
 });
 const Status = z.enum(["PASS", "FAIL", "NOT_RUN"]);
 const ConstraintResultRow = z.object({ constraintId: z.string(), name: z.string(), severity: z.enum(["hard", "soft"]), status: Status, detail: z.string() });
@@ -171,7 +188,7 @@ const DecisionRow = z.object({
       direction: z.enum(["minimize", "maximize"]),
       baseline: z.number().nullable(),
       candidate: z.number().nullable(),
-      outcome: z.enum(["improved", "worse", "unchanged", "unknown", "insufficient_data"]),
+      outcome: z.enum(["improved", "worse", "unchanged", "unknown", "insufficient_data", "untrusted"]),
     }),
   ),
   guards: z.array(z.object({ metric: z.string(), label: z.string(), operator: Operator, threshold: z.number(), reason: z.string(), value: z.number().nullable(), status: Status })),
@@ -187,6 +204,7 @@ const DecisionRow = z.object({
       missionHash: z.string(),
       envelopeHash: z.string(),
       evaluators: z.array(z.string()),
+      environment: z.string().default(""),
     })
     .nullable(),
 });
@@ -234,7 +252,8 @@ export class HabitatStore {
   private migrate(): void {
     const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
     if (version >= SCHEMA_VERSION) return;
-    const legacy = this.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'candidates'").get() !== null;
+    // v1 databases predate user_version; v2 → v3 only adds tables and indexes (SCHEMA is idempotent).
+    const legacy = version === 0 && this.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'candidates'").get() !== null;
     this.db.transaction(() => {
       if (legacy) this.db.exec(MIGRATE_V1);
       this.db.exec(SCHEMA);
@@ -380,18 +399,28 @@ export class HabitatStore {
     return row ? { candidateId: row.candidate_id, decision: parseDecision(row.detail) } : undefined;
   }
 
+  saveEnvironment(environment: { hash: string; detail: unknown }): void {
+    this.db.query("INSERT OR IGNORE INTO environments (hash, detail, created_at) VALUES ($hash, $detail, $now)").run({ hash: environment.hash, detail: JSON.stringify(environment.detail), now: Date.now() });
+  }
+
+  environment(hash: string): Record<string, unknown> | undefined {
+    const row = this.db.query<{ detail: string }, { hash: string }>("SELECT detail FROM environments WHERE hash = $hash").get({ hash });
+    return row ? (JSON.parse(row.detail) as Record<string, unknown>) : undefined;
+  }
+
   record(kind: string, input: { missionId?: string; candidateId?: string; data?: Record<string, unknown> } = {}): void {
     this.db
       .query("INSERT INTO habitat_events (kind, mission_id, candidate_id, data, created_at) VALUES ($kind, $missionId, $candidateId, $data, $now)")
       .run({ kind, missionId: input.missionId ?? null, candidateId: input.candidateId ?? null, data: input.data ? JSON.stringify(input.data) : null, now: Date.now() });
   }
 
-  events(limit = 200): HabitatEvent[] {
+  /** The recorder of one mission (one organism), newest first. Other missions' events are never mixed in. */
+  events(missionId: string, limit = 200): HabitatEvent[] {
     return this.db
-      .query<{ id: number; kind: string; mission_id: string | null; candidate_id: string | null; data: string | null; created_at: number }, { limit: number }>(
-        "SELECT * FROM habitat_events ORDER BY id DESC LIMIT $limit",
+      .query<{ id: number; kind: string; mission_id: string | null; candidate_id: string | null; data: string | null; created_at: number }, { limit: number; missionId: string }>(
+        "SELECT * FROM habitat_events WHERE mission_id = $missionId ORDER BY id DESC LIMIT $limit",
       )
-      .all({ limit })
+      .all({ limit, missionId })
       .map((r) => ({ id: r.id, kind: r.kind, missionId: r.mission_id, candidateId: r.candidate_id, data: r.data ? (JSON.parse(r.data) as Record<string, unknown>) : null, createdAt: r.created_at }));
   }
 }

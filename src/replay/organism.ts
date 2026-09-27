@@ -1,6 +1,7 @@
 import type { Mission, Organism } from "../domain.ts";
 import { CommandEvaluator, PathPolicyEvaluator } from "../evaluators.ts";
 import type { Evaluator } from "../ports.ts";
+import type { CommandRunner } from "../runner.ts";
 
 /**
  * OWNR Replay as the first Organism, referenced by its repository and baseline ref. This adapter is
@@ -72,20 +73,44 @@ export const REPLAY_TTVO_MISSION: Mission = {
       { name: "Acessibilidade", reason: "nenhum avaliador de acessibilidade instalado" },
     ],
   },
+  // Raw telemetry is not evidence. Each metric is trusted only from its source, and values are compared
+  // only while the organism code that produces them (the instrument) is byte-identical on both sides.
+  evidence: {
+    sources: {
+      "m1.max_new_lines": "replay-curriculum",
+      "m1.stages_above_5": "replay-curriculum",
+      "m1.mean_new_lines": "replay-curriculum",
+      "m1.unjustified_large_stages": "replay-curriculum",
+      "m1.concepts_introduced": "replay-curriculum",
+      "m1.checkpoint_present": "replay-curriculum",
+      "m1.micro_stages": "replay-curriculum",
+      "m1.max_line_length": "replay-curriculum",
+      "web.bundle_gzip_kb": "replay-bundle",
+      "replay.median_microstage_seconds": "telemetry",
+      "replay.checkpoint_success_rate": "telemetry",
+      "replay.novel_change_success_rate": "telemetry",
+    },
+    instruments: {
+      "replay-curriculum": ["scripts/measure.ts", "src/services/curriculum.ts", "src/services/curriculum-check.ts", "src/domain/line-diff.ts", "src/domain/stage.ts", "src/domain/journey.ts"],
+      "replay-bundle": ["scripts/measure.ts", "src/web-assets.ts"],
+      // Everything that decides what a learning event means: emitted in the browser, recorded by the API.
+      telemetry: ["web/app.ts", "web/store.ts", "web/stage-view.ts", "web/api.ts", "src/http/api.ts", "src/db/repository.ts", "src/db/schema.sql", "src/domain/progress.ts"],
+    },
+  },
 };
 
 /**
  * Evaluators run in this order after the path policy, in the evaluated checkout. The curriculum and
  * bundle measurements come from the organism's own instrument, protected from candidates by the path policy.
  */
-export function replayEvaluators(organism: Organism): { pathPolicy: Evaluator; evaluators: Evaluator[] } {
+export function replayEvaluators(organism: Organism, runner: CommandRunner): { pathPolicy: Evaluator; evaluators: Evaluator[] } {
   return {
     pathPolicy: new PathPolicyEvaluator(organism.allowedPaths),
     evaluators: [
-      new CommandEvaluator("replay-curriculum", ["bun", "scripts/measure.ts", "curriculum"], { timeoutMs: 60_000, output: "probe" }),
-      new CommandEvaluator("replay-bundle", ["bun", "scripts/measure.ts", "bundle"], { timeoutMs: 60_000, output: "probe" }),
-      new CommandEvaluator("typecheck", ["bunx", "tsc", "--noEmit"], { timeoutMs: 180_000, output: "exit-code" }),
-      new CommandEvaluator("tests", ["bun", "test"], { timeoutMs: 600_000, output: "bun-test" }),
+      new CommandEvaluator("replay-curriculum", ["bun", "scripts/measure.ts", "curriculum"], { timeoutMs: 60_000, output: "probe" }, runner),
+      new CommandEvaluator("replay-bundle", ["bun", "scripts/measure.ts", "bundle"], { timeoutMs: 60_000, output: "probe" }, runner),
+      new CommandEvaluator("typecheck", ["bunx", "tsc", "--noEmit"], { timeoutMs: 180_000, output: "exit-code" }, runner),
+      new CommandEvaluator("tests", ["bun", "test"], { timeoutMs: 600_000, output: "bun-test" }, runner),
     ],
   };
 }
