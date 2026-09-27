@@ -1,0 +1,5 @@
+{
+  "hypothesis": "A etapa 10 introduz 6 linhas porque, além do laço da melhor até agora, cria a constante CATEGORIES. Percorrendo a lista direto no for, a etapa cai para 5 linhas; a lista só ganha nome na etapa 13, quando a ordem vira decisão (TIE_BREAK).",
+  "source": { "kind": "manual", "author": "agente de código (loop pós-separação)" },
+  "claims": "Etapa 10 com 5 linhas novas, mesmo comportamento e mesmos conceitos."
+}
