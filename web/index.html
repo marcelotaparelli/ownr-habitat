@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OWNR Habitat</title>
+    <link rel="stylesheet" href="/cockpit.css" />
+  </head>
+  <body>
+    <header class="top">
+      <strong>OWNR Habitat</strong>
+      <span id="organism" class="muted"></span>
+      <span id="running" class="running" hidden></span>
+    </header>
+    <main class="cockpit">
+      <section class="col" aria-label="Missão e envelope">
+        <div id="mission"></div>
+        <div id="envelope"></div>
+      </section>
+      <section class="col" aria-label="Evolução">
+        <div id="evolution"></div>
+        <div id="candidate"></div>
+      </section>
+      <section class="col" aria-label="Gravador de voo">
+        <div id="recorder"></div>
+      </section>
+    </main>
+    <script type="module" src="/cockpit.js"></script>
+  </body>
+</html>

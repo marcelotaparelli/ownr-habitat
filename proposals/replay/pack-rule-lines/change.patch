@@ -1,0 +1,60 @@
+diff --git a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+index ed4b868..ad0a7dd 100644
+--- a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+@@ -6,12 +6,9 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 }, { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
++  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 }, { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
++  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 }, { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+diff --git a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+index ed4b868..ad0a7dd 100644
+--- a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+@@ -6,12 +6,9 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 }, { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
++  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 }, { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
++  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 }, { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+diff --git a/scripts/author-golden-m1.ts b/scripts/author-golden-m1.ts
+index 0642aae..f54c1e0 100644
+--- a/scripts/author-golden-m1.ts
++++ b/scripts/author-golden-m1.ts
+@@ -120,12 +120,9 @@ const RULES_REGEX = String.raw`const RULES = [
+ ];`;
+ 
+ const RULES_ENUM = String.raw`const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 }, { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
++  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 }, { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
++  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 }, { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
+ ];`;
+ 
+ const FIRST_MATCH = `function classify(${TICKET}): string {

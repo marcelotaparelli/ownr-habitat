@@ -1,0 +1,237 @@
+diff --git a/data/golden/ops-triage-ai/journey.json b/data/golden/ops-triage-ai/journey.json
+index e706676..11bc869 100644
+--- a/data/golden/ops-triage-ai/journey.json
++++ b/data/golden/ops-triage-ai/journey.json
+@@ -190,7 +190,7 @@
+     },
+     {
+       "id": "regex-word-boundary",
+-      "name": "RegExp e \\b",
++      "name": "Palavra inteira (split e \\W)",
+       "group": "Linguagem",
+       "aliases": [
+         "regex",
+diff --git a/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
+index d7f24c5..516b397 100644
+--- a/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
+@@ -10,10 +10,10 @@ const RULES = [
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
++    if (rule.category === category && title.split(/\W+/).includes(rule.word)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
++    if (rule.category === category && description.split(/\W+/).includes(rule.word)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json b/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
+index f41f83c..d791bbe 100644
+--- a/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
++++ b/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
+@@ -103,12 +103,12 @@
+   ],
+   "lineNotes": [
+     {
+-      "match": "new RegExp(\"\\\\b\" + rule.word + \"\\\\b\")",
+-      "note": "Monta uma express\\u00E3o regular a partir da palavra. \\b marca onde uma palavra come\\u00E7a ou termina: casa \"down\", n\\u00E3o \"downloads\". Dentro de uma string, \\b se escreve \"\\\\b\"."
++      "match": "title.split(/\\W+/)",
++      "note": "Quebra o texto em palavras: /\\W+/ casa com cada trecho que n\\u00E3o \\u00E9 letra, n\\u00FAmero ou _. \"debug mode\" vira [\"debug\", \"mode\"]."
+     },
+     {
+-      "match": ".test(title)",
+-      "note": "`.test` pergunta se o padrão casa no texto — o papel que `includes` fazia."
++      "match": ".includes(rule.word)",
++      "note": "`includes` numa lista pergunta se a pista é uma das palavras inteiras — não mais um pedaço do texto."
+     }
+   ],
+   "explanation": [
+@@ -116,7 +116,7 @@
+       "id": "regex",
+       "conceptId": "regex-word-boundary",
+       "title": "Padrões em vez de pedaços",
+-      "quick": "A tabela continua igual; só o teste muda: `includes` aceita um pedaço, `new RegExp(\"\\\\b\" + rule.word + \"\\\\b\")` só aceita a palavra inteira."
++      "quick": "A tabela continua igual; só o teste muda: em vez de procurar um pedaço do texto, quebramos o texto em palavras (`split(/\\W+/)`) e perguntamos se a pista é uma delas."
+     }
+   ],
+   "exercise": {
+@@ -131,17 +131,11 @@
+   },
+   "toolbox": [
+     {
+-      "id": "regex-test",
+-      "name": "RegExp.test()",
+-      "signature": "/padrão/.test(texto): boolean",
+-      "summary": "true se o padrão casa em algum lugar do texto.",
+-      "example": "/cat/.test(\"concatenate\"); // true"
+-    },
+-    {
+-      "id": "word-boundary",
+-      "name": "\\b (fronteira de palavra)",
+-      "summary": "Casa onde uma palavra começa ou termina.",
+-      "example": "/\\bcat\\b/.test(\"concatenate\"); // false\n/\\bcat\\b/.test(\"my cat\"); // true"
++      "id": "split-words",
++      "name": "String.split()",
++      "signature": "texto.split(separador): string[]",
++      "summary": "Quebra o texto numa lista de pedaços; com /\\W+/, numa lista de palavras.",
++      "example": "\"debug mode, now\".split(/\\W+/); // [\"debug\", \"mode\", \"now\"]\n[\"debug\", \"mode\"].includes(\"bug\"); // false"
+     }
+   ],
+   "limitation": "As categorias são strings soltas. Um **\"INCIDNET\"** digitado errado passaria em silêncio — e aquela categoria nunca mais seria escolhida."
+diff --git a/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
+index c8e2748..7a7da13 100644
+--- a/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
+@@ -17,10 +17,10 @@ const RULES = [
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
++    if (rule.category === category && title.split(/\W+/).includes(rule.word)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
++    if (rule.category === category && description.split(/\W+/).includes(rule.word)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
+index 027a1ba..c8d211e 100644
+--- a/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
+@@ -17,10 +17,10 @@ const RULES = [
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
++    if (rule.category === category && title.split(/\W+/).includes(rule.word)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
++    if (rule.category === category && description.split(/\W+/).includes(rule.word)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+index 628d87f..888c781 100644
+--- a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+@@ -17,10 +17,10 @@ const RULES = [
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
++    if (rule.category === category && title.split(/\W+/).includes(rule.word)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
++    if (rule.category === category && description.split(/\W+/).includes(rule.word)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+index 628d87f..888c781 100644
+--- a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+@@ -17,10 +17,10 @@ const RULES = [
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
++    if (rule.category === category && title.split(/\W+/).includes(rule.word)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
++    if (rule.category === category && description.split(/\W+/).includes(rule.word)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/stage.json b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/stage.json
+index bbf242f..80399f4 100644
+--- a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/stage.json
++++ b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/stage.json
+@@ -181,17 +181,11 @@
+       "example": "enum Color {\n  RED = \"RED\",\n  BLUE = \"BLUE\",\n}\n\nconst c: Color = Color.RED; // \"RED\""
+     },
+     {
+-      "id": "regex-test",
+-      "name": "RegExp.test()",
+-      "signature": "/padrão/.test(texto): boolean",
+-      "summary": "true se o padrão casa em algum lugar do texto.",
+-      "example": "/cat/.test(\"concatenate\"); // true"
+-    },
+-    {
+-      "id": "word-boundary",
+-      "name": "\\b (fronteira de palavra)",
+-      "summary": "Casa onde uma palavra começa ou termina.",
+-      "example": "/\\bcat\\b/.test(\"concatenate\"); // false\n/\\bcat\\b/.test(\"my cat\"); // true"
++      "id": "split-words",
++      "name": "String.split()",
++      "signature": "texto.split(separador): string[]",
++      "summary": "Quebra o texto numa lista de pedaços; com /\\W+/, numa lista de palavras.",
++      "example": "\"debug mode, now\".split(/\\W+/); // [\"debug\", \"mode\", \"now\"]\n[\"debug\", \"mode\"].includes(\"bug\"); // false"
+     },
+     {
+       "id": "for-of",
+diff --git a/scripts/author-golden-m1.ts b/scripts/author-golden-m1.ts
+index d8c6a9c..e6e2073 100644
+--- a/scripts/author-golden-m1.ts
++++ b/scripts/author-golden-m1.ts
+@@ -153,7 +153,7 @@ const scoreBy = (test: (where: string) => string, title: string, description: st
+ }`;
+ const SCORE_TITLE = scoreBy((w) => `${w}.includes(rule.word)`, "2", "1");
+ const SCORE_WEIGHTED = scoreBy((w) => `${w}.includes(rule.word)`, "rule.weight * 2", "rule.weight");
+-const SCORE_WORDS = scoreBy((w) => String.raw`new RegExp("\\b" + rule.word + "\\b").test(${w})`, "rule.weight * 2", "rule.weight");
++const SCORE_WORDS = scoreBy((w) => `${w}.split(/\\W+/).includes(rule.word)`, "rule.weight * 2", "rule.weight");
+ 
+ // Comparing two scores, then keeping the best so far. "OTHER" has no rules, so its score is 0:
+ // comparing against scoreCategory(best) needs no extra variable for the best score.
+@@ -241,7 +241,7 @@ const tool = {
+   counter: { id: "counter", name: "Contador (+=)", summary: "Comece em 0 e some dentro do laço.", example: "let total = 0;\nfor (const n of [1, 2, 3]) {\n  total += n;\n}\n// total === 6" },
+   and: { id: "and", name: "&& (e)", summary: "Verdadeiro só se os dois lados forem.", example: 'const fruit = { color: "red", ripe: true };\nif (fruit.color === "red" && fruit.ripe) {\n  console.log("pronta");\n}' },
+   max: { id: "running-max", name: "Guardar o maior até agora", summary: "Duas variáveis: o melhor item e seu valor; troque quando achar um maior.", example: 'const players = [{ name: "Ana", points: 3 }, { name: "Bia", points: 5 }];\nlet best = "";\nlet bestPoints = 0;\nfor (const p of players) {\n  if (p.points > bestPoints) {\n    best = p.name;\n    bestPoints = p.points;\n  }\n}\n// best === "Bia"' },
+-  regex: { id: "regex-test", name: "RegExp.test()", signature: "/padrão/.test(texto): boolean", summary: "true se o padrão casa em algum lugar do texto.", example: '/cat/.test("concatenate"); // true' },
++  split: { id: "split-words", name: "String.split()", signature: "texto.split(separador): string[]", summary: "Quebra o texto numa lista de pedaços; com /\\W+/, numa lista de palavras.", example: '"debug mode, now".split(/\\W+/); // ["debug", "mode", "now"]\n["debug", "mode"].includes("bug"); // false' },
+   boundary: { id: "word-boundary", name: String.raw`\b (fronteira de palavra)`, summary: "Casa onde uma palavra começa ou termina.", example: String.raw`/\bcat\b/.test("concatenate"); // false` + "\n" + String.raw`/\bcat\b/.test("my cat"); // true` },
+   enumT: { id: "enum", name: "enum", signature: 'enum Nome { A = "A", B = "B" }', summary: "Um conjunto fechado de valores com nome.", example: 'enum Color {\n  RED = "RED",\n  BLUE = "BLUE",\n}\n\nconst c: Color = Color.RED; // "RED"' },
+ } satisfies Record<string, Tool>;
+@@ -742,15 +742,15 @@ test("nada → OTHER", () => expect(t("Lunch", "menu")).toBe("OTHER"));`,
+     arch: ARCH_TIE,
+     program: P14,
+     lineNotes: [
+-      { match: 'new RegExp("\\\\b" + rule.word + "\\\\b")', note: String.raw`Monta uma expressão regular a partir da palavra. \b marca onde uma palavra começa ou termina: casa "down", não "downloads". Dentro de uma string, \b se escreve "\\b".` },
+-      { match: ".test(title)", note: "`.test` pergunta se o padrão casa no texto — o papel que `includes` fazia." },
++      { match: "title.split(/\\W+/)", note: String.raw`Quebra o texto em palavras: /\W+/ casa com cada trecho que não é letra, número ou _. "debug mode" vira ["debug", "mode"].` },
++      { match: ".includes(rule.word)", note: "`includes` numa lista pergunta se a pista é uma das palavras inteiras — não mais um pedaço do texto." },
+     ],
+     explanation: [
+       {
+         id: "regex",
+         conceptId: "regex-word-boundary",
+         title: "Padrões em vez de pedaços",
+-        quick: 'A tabela continua igual; só o teste muda: `includes` aceita um pedaço, `new RegExp("\\\\b" + rule.word + "\\\\b")` só aceita a palavra inteira.',
++        quick: "A tabela continua igual; só o teste muda: em vez de procurar um pedaço do texto, quebramos o texto em palavras (`split(/\\W+/)`) e perguntamos se a pista é uma delas.",
+       },
+     ],
+     instructions: 'Faça cada pista casar só com a palavra inteira: "debug" não é "bug", "downloads" não é "down". Mesmas pistas, categorias e pesos.',
+@@ -763,7 +763,7 @@ test("bug no título: 3 × 2", () => expect(scoreCategory("BUG", "bug in checkou
+ test("login e password na descrição: 4 + 2", () => expect(scoreCategory("ACCESS", "", "login after password reset")).toBe(6));
+ test("classify: debug mode → OTHER", () => expect(classify({ title: "Debug mode is slow", description: "" })).toBe("OTHER"));`,
+     ),
+-    toolbox: [tool.regex, tool.boundary],
++    toolbox: [tool.split],
+     limitation: 'As categorias são strings soltas. Um **"INCIDNET"** digitado errado passaria em silêncio — e aquela categoria nunca mais seria escolhida.',
+   },
+   {
+@@ -941,7 +941,7 @@ test("empate: INCIDENT > ACCESS > BUG", () => {
+ });
+ test("sem pistas → OTHER", () => expect(t("Lunch", "menu")).toBe(Category.OTHER));`,
+   ),
+-  toolbox: [tool.enumT, tool.regex, tool.boundary, tool.forOf, tool.max, tool.lower],
++  toolbox: [tool.enumT, tool.split, tool.forOf, tool.max, tool.lower],
+   originalCodeRefs: [
+     { path: "src/domain/triage.ts", startLine: 1, endLine: 9, symbol: "Category", replayFile: FILE, note: "O mesmo enum, com 7 categorias (inclui FEATURE_REQUEST, CONTENT_CHANGE e SUPPORT). Mora na camada de domínio." },
+     { path: "src/application/classifiers/deterministic-triage-classifier.ts", startLine: 24, endLine: 66, symbol: "CATEGORY_SIGNALS", replayFile: FILE, replaySymbol: "RULES", note: "Nossa tabela RULES, organizada por categoria (Record<Category, ...>), com vários sinais por categoria e um label por sinal para explicar a decisão." },

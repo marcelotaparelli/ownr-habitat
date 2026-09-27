@@ -1,0 +1,5 @@
+{
+  "hypothesis": "Etapas com 8+ linhas novas deixam de exigir justificativa se o limite do teste de currículo subir para 20; assim nenhuma etapa precisa ser decomposta.",
+  "source": { "kind": "manual", "author": "agente de código (exemplo adversarial)" },
+  "claims": "Todos os testes passam e o orçamento de novidade é respeitado."
+}

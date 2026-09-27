@@ -1,0 +1,290 @@
+diff --git a/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
+index 0a0cb81..d7f24c5 100644
+--- a/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/14-whole-words/reference/classify.ts
+@@ -1,19 +1,19 @@
+ const RULES = [
+-  { pattern: /\bdown\b/, category: "INCIDENT", weight: 5 },
+-  { pattern: /\boutage\b/, category: "INCIDENT", weight: 4 },
+-  { pattern: /\bbug\b/, category: "BUG", weight: 3 },
+-  { pattern: /\berror\b/, category: "BUG", weight: 1 },
+-  { pattern: /\blogin\b/, category: "ACCESS", weight: 4 },
+-  { pattern: /\bpassword\b/, category: "ACCESS", weight: 2 },
++  { word: "down", category: "INCIDENT", weight: 5 },
++  { word: "outage", category: "INCIDENT", weight: 4 },
++  { word: "bug", category: "BUG", weight: 3 },
++  { word: "error", category: "BUG", weight: 1 },
++  { word: "login", category: "ACCESS", weight: 4 },
++  { word: "password", category: "ACCESS", weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && rule.pattern.test(title)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && rule.pattern.test(description)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json b/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
+index 2045cf2..f41f83c 100644
+--- a/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
++++ b/data/golden/ops-triage-ai/stages/m1/14-whole-words/stage.json
+@@ -103,11 +103,11 @@
+   ],
+   "lineNotes": [
+     {
+-      "match": "/\\bdown\\b/",
+-      "note": "Uma express\\u00E3o regular. \\b marca onde uma palavra come\\u00E7a ou termina: casa \"down\", n\\u00E3o \"downloads\"."
++      "match": "new RegExp(\"\\\\b\" + rule.word + \"\\\\b\")",
++      "note": "Monta uma express\\u00E3o regular a partir da palavra. \\b marca onde uma palavra come\\u00E7a ou termina: casa \"down\", n\\u00E3o \"downloads\". Dentro de uma string, \\b se escreve \"\\\\b\"."
+     },
+     {
+-      "match": "rule.pattern.test(title)",
++      "match": ".test(title)",
+       "note": "`.test` pergunta se o padrão casa no texto — o papel que `includes` fazia."
+     }
+   ],
+@@ -116,7 +116,7 @@
+       "id": "regex",
+       "conceptId": "regex-word-boundary",
+       "title": "Padrões em vez de pedaços",
+-      "quick": "Cada regra guarda um padrão (`/\\bbug\\b/`) em vez de uma palavra. `\\b` exige que seja uma palavra inteira."
++      "quick": "A tabela continua igual; só o teste muda: `includes` aceita um pedaço, `new RegExp(\"\\\\b\" + rule.word + \"\\\\b\")` só aceita a palavra inteira."
+     }
+   ],
+   "exercise": {
+@@ -144,6 +144,5 @@
+       "example": "/\\bcat\\b/.test(\"concatenate\"); // false\n/\\bcat\\b/.test(\"my cat\"); // true"
+     }
+   ],
+-  "limitation": "As categorias são strings soltas. Um **\"INCIDNET\"** digitado errado passaria em silêncio — e aquela categoria nunca mais seria escolhida.",
+-  "noveltyException": "6 das 8 linhas são a mesma troca mecânica na tabela (`word: \"bug\"` → `pattern: /\\bbug\\b/`); a ideia é uma só. Tratar só parte das regras exigiria código para dois formatos de regra ao mesmo tempo."
++  "limitation": "As categorias são strings soltas. Um **\"INCIDNET\"** digitado errado passaria em silêncio — e aquela categoria nunca mais seria escolhida."
+ }
+diff --git a/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
+index a0e5e01..c8e2748 100644
+--- a/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/15-category-enum/reference/classify.ts
+@@ -6,21 +6,21 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: "INCIDENT", weight: 5 },
+-  { pattern: /\boutage\b/, category: "INCIDENT", weight: 4 },
+-  { pattern: /\bbug\b/, category: "BUG", weight: 3 },
+-  { pattern: /\berror\b/, category: "BUG", weight: 1 },
+-  { pattern: /\blogin\b/, category: "ACCESS", weight: 4 },
+-  { pattern: /\bpassword\b/, category: "ACCESS", weight: 2 },
++  { word: "down", category: "INCIDENT", weight: 5 },
++  { word: "outage", category: "INCIDENT", weight: 4 },
++  { word: "bug", category: "BUG", weight: 3 },
++  { word: "error", category: "BUG", weight: 1 },
++  { word: "login", category: "ACCESS", weight: 4 },
++  { word: "password", category: "ACCESS", weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && rule.pattern.test(title)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && rule.pattern.test(description)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
+index dbdc65d..027a1ba 100644
+--- a/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/16-classify-returns-category/reference/classify.ts
+@@ -6,21 +6,21 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: "INCIDENT", weight: 5 },
+-  { pattern: /\boutage\b/, category: "INCIDENT", weight: 4 },
+-  { pattern: /\bbug\b/, category: "BUG", weight: 3 },
+-  { pattern: /\berror\b/, category: "BUG", weight: 1 },
+-  { pattern: /\blogin\b/, category: "ACCESS", weight: 4 },
+-  { pattern: /\bpassword\b/, category: "ACCESS", weight: 2 },
++  { word: "down", category: "INCIDENT", weight: 5 },
++  { word: "outage", category: "INCIDENT", weight: 4 },
++  { word: "bug", category: "BUG", weight: 3 },
++  { word: "error", category: "BUG", weight: 1 },
++  { word: "login", category: "ACCESS", weight: 4 },
++  { word: "password", category: "ACCESS", weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && rule.pattern.test(title)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && rule.pattern.test(description)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+index ed4b868..628d87f 100644
+--- a/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/17-rules-use-enum/reference/classify.ts
+@@ -6,21 +6,21 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++  { word: "down", category: Category.INCIDENT, weight: 5 },
++  { word: "outage", category: Category.INCIDENT, weight: 4 },
++  { word: "bug", category: Category.BUG, weight: 3 },
++  { word: "error", category: Category.BUG, weight: 1 },
++  { word: "login", category: Category.ACCESS, weight: 4 },
++  { word: "password", category: Category.ACCESS, weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && rule.pattern.test(title)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && rule.pattern.test(description)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+index ed4b868..628d87f 100644
+--- a/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
++++ b/data/golden/ops-triage-ai/stages/m1/99-checkpoint/reference/classify.ts
+@@ -6,21 +6,21 @@ enum Category {
+ }
+ 
+ const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++  { word: "down", category: Category.INCIDENT, weight: 5 },
++  { word: "outage", category: Category.INCIDENT, weight: 4 },
++  { word: "bug", category: Category.BUG, weight: 3 },
++  { word: "error", category: Category.BUG, weight: 1 },
++  { word: "login", category: Category.ACCESS, weight: 4 },
++  { word: "password", category: Category.ACCESS, weight: 2 },
+ ];
+ 
+ function scoreCategory(category: string, title: string, description: string): number {
+   let score = 0;
+   for (const rule of RULES) {
+-    if (rule.category === category && rule.pattern.test(title)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(title)) {
+       score += rule.weight * 2;
+     }
+-    if (rule.category === category && rule.pattern.test(description)) {
++    if (rule.category === category && new RegExp("\\b" + rule.word + "\\b").test(description)) {
+       score += rule.weight;
+     }
+   }
+diff --git a/scripts/author-golden-m1.ts b/scripts/author-golden-m1.ts
+index 0642aae..d8c6a9c 100644
+--- a/scripts/author-golden-m1.ts
++++ b/scripts/author-golden-m1.ts
+@@ -110,22 +110,13 @@ const RULES_WEIGHTED = `const RULES = [
+   { word: "password", category: "ACCESS", weight: 2 },
+ ];`;
+ 
+-const RULES_REGEX = String.raw`const RULES = [
+-  { pattern: /\bdown\b/, category: "INCIDENT", weight: 5 },
+-  { pattern: /\boutage\b/, category: "INCIDENT", weight: 4 },
+-  { pattern: /\bbug\b/, category: "BUG", weight: 3 },
+-  { pattern: /\berror\b/, category: "BUG", weight: 1 },
+-  { pattern: /\blogin\b/, category: "ACCESS", weight: 4 },
+-  { pattern: /\bpassword\b/, category: "ACCESS", weight: 2 },
+-];`;
+-
+-const RULES_ENUM = String.raw`const RULES = [
+-  { pattern: /\bdown\b/, category: Category.INCIDENT, weight: 5 },
+-  { pattern: /\boutage\b/, category: Category.INCIDENT, weight: 4 },
+-  { pattern: /\bbug\b/, category: Category.BUG, weight: 3 },
+-  { pattern: /\berror\b/, category: Category.BUG, weight: 1 },
+-  { pattern: /\blogin\b/, category: Category.ACCESS, weight: 4 },
+-  { pattern: /\bpassword\b/, category: Category.ACCESS, weight: 2 },
++const RULES_ENUM = `const RULES = [
++  { word: "down", category: Category.INCIDENT, weight: 5 },
++  { word: "outage", category: Category.INCIDENT, weight: 4 },
++  { word: "bug", category: Category.BUG, weight: 3 },
++  { word: "error", category: Category.BUG, weight: 1 },
++  { word: "login", category: Category.ACCESS, weight: 4 },
++  { word: "password", category: Category.ACCESS, weight: 2 },
+ ];`;
+ 
+ const FIRST_MATCH = `function classify(${TICKET}): string {
+@@ -162,7 +153,7 @@ const scoreBy = (test: (where: string) => string, title: string, description: st
+ }`;
+ const SCORE_TITLE = scoreBy((w) => `${w}.includes(rule.word)`, "2", "1");
+ const SCORE_WEIGHTED = scoreBy((w) => `${w}.includes(rule.word)`, "rule.weight * 2", "rule.weight");
+-const SCORE_REGEX = scoreBy((w) => `rule.pattern.test(${w})`, "rule.weight * 2", "rule.weight");
++const SCORE_WORDS = scoreBy((w) => String.raw`new RegExp("\\b" + rule.word + "\\b").test(${w})`, "rule.weight * 2", "rule.weight");
+ 
+ // Comparing two scores, then keeping the best so far. "OTHER" has no rules, so its score is 0:
+ // comparing against scoreCategory(best) needs no extra variable for the best score.
+@@ -214,10 +205,10 @@ const P10 = join2(RULES_6, SCORE_COUNT, CATEGORIES, best("CATEGORIES", "string",
+ const P11 = join2(RULES_6, SCORE_TITLE, CATEGORIES, best("CATEGORIES"));
+ const P12 = join2(RULES_WEIGHTED, SCORE_WEIGHTED, CATEGORIES, best("CATEGORIES"));
+ const P13 = join2(RULES_WEIGHTED, SCORE_WEIGHTED, TIE_BREAK, best("TIE_BREAK"));
+-const P14 = join2(RULES_REGEX, SCORE_REGEX, TIE_BREAK, best("TIE_BREAK"));
+-const P15 = join2(ENUM, RULES_REGEX, SCORE_REGEX, TIE_BREAK, best("TIE_BREAK"));
+-const P16 = join2(ENUM, RULES_REGEX, SCORE_REGEX, TIE_BREAK_ENUM, best("TIE_BREAK", "Category", "Category.OTHER"));
+-const P17 = join2(ENUM, RULES_ENUM, SCORE_REGEX, TIE_BREAK_ENUM, best("TIE_BREAK", "Category", "Category.OTHER"));
++const P14 = join2(RULES_WEIGHTED, SCORE_WORDS, TIE_BREAK, best("TIE_BREAK"));
++const P15 = join2(ENUM, RULES_WEIGHTED, SCORE_WORDS, TIE_BREAK, best("TIE_BREAK"));
++const P16 = join2(ENUM, RULES_WEIGHTED, SCORE_WORDS, TIE_BREAK_ENUM, best("TIE_BREAK", "Category", "Category.OTHER"));
++const P17 = join2(ENUM, RULES_ENUM, SCORE_WORDS, TIE_BREAK_ENUM, best("TIE_BREAK", "Category", "Category.OTHER"));
+ 
+ // ---------- tests ----------
+ const T = (names: string, body: string) => `import { test, expect } from "ownr:test";\nimport { ${names} } from "./${FILE}";\n\n${body.trim()}\n`;
+@@ -751,15 +742,15 @@ test("nada → OTHER", () => expect(t("Lunch", "menu")).toBe("OTHER"));`,
+     arch: ARCH_TIE,
+     program: P14,
+     lineNotes: [
+-      { match: String.raw`/\bdown\b/`, note: String.raw`Uma expressão regular. \b marca onde uma palavra começa ou termina: casa "down", não "downloads".` },
+-      { match: "rule.pattern.test(title)", note: "`.test` pergunta se o padrão casa no texto — o papel que `includes` fazia." },
++      { match: 'new RegExp("\\\\b" + rule.word + "\\\\b")', note: String.raw`Monta uma expressão regular a partir da palavra. \b marca onde uma palavra começa ou termina: casa "down", não "downloads". Dentro de uma string, \b se escreve "\\b".` },
++      { match: ".test(title)", note: "`.test` pergunta se o padrão casa no texto — o papel que `includes` fazia." },
+     ],
+     explanation: [
+       {
+         id: "regex",
+         conceptId: "regex-word-boundary",
+         title: "Padrões em vez de pedaços",
+-        quick: "Cada regra guarda um padrão (`/\\bbug\\b/`) em vez de uma palavra. `\\b` exige que seja uma palavra inteira.",
++        quick: 'A tabela continua igual; só o teste muda: `includes` aceita um pedaço, `new RegExp("\\\\b" + rule.word + "\\\\b")` só aceita a palavra inteira.',
+       },
+     ],
+     instructions: 'Faça cada pista casar só com a palavra inteira: "debug" não é "bug", "downloads" não é "down". Mesmas pistas, categorias e pesos.',
+@@ -774,8 +765,6 @@ test("classify: debug mode → OTHER", () => expect(classify({ title: "Debug mod
+     ),
+     toolbox: [tool.regex, tool.boundary],
+     limitation: 'As categorias são strings soltas. Um **"INCIDNET"** digitado errado passaria em silêncio — e aquela categoria nunca mais seria escolhida.',
+-    noveltyException:
+-      "6 das 8 linhas são a mesma troca mecânica na tabela (`word: \"bug\"` → `pattern: /\\bbug\\b/`); a ideia é uma só. Tratar só parte das regras exigiria código para dois formatos de regra ao mesmo tempo.",
+   },
+   {
+     slug: "15-category-enum",

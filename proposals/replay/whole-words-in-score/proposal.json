@@ -1,0 +1,5 @@
+{
+  "hypothesis": "A etapa 14 (Palavra inteira) introduz 8 linhas porque troca a tabela inteira por padrões regex. Mantendo a tabela com palavras e testando a palavra inteira dentro de scoreCategory, a mesma ideia cabe em 2 linhas novas.",
+  "source": { "kind": "manual", "author": "agente de código (autoria assistida)" },
+  "claims": "Reduz a novidade da etapa 14 de 8 para 2 linhas sem perder o conceito de fronteira de palavra."
+}

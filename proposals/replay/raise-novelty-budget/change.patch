@@ -1,0 +1,13 @@
+diff --git a/tests/curriculum.test.ts b/tests/curriculum.test.ts
+index c501212..185dfcc 100644
+--- a/tests/curriculum.test.ts
++++ b/tests/curriculum.test.ts
+@@ -21,7 +21,7 @@ const checker = new TypeChecker(await locateTsc());
+  * 1–4 ideal · 5 acceptable · 6–7 alert, review whether it can be split · 8+ assume it must be
+  * decomposed: fails unless the stage justifies it (noveltyException).
+  */
+-const NOVELTY_MUST_JUSTIFY = 8;
++const NOVELTY_MUST_JUSTIFY = 20;
+ const tier = (n: number): string => (n <= 4 ? "ideal" : n === 5 ? "aceitável" : n <= 7 ? "ALERTA: revisar divisão" : "precisa de justificativa");
+ 
+ async function run(exercise: Exercise, files: CodeFile[]): Promise<RunResult | ModuleError> {

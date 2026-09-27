@@ -1,0 +1,5 @@
+{
+  "hypothesis": "Na etapa 14 o aluno precisa escrever \"\\\\b\" dentro de uma string para montar a regex. Quebrar o texto em palavras com split(/\\W+/) e usar includes na lista ensina a mesma ideia (palavra inteira) sem escape duplo.",
+  "source": { "kind": "manual", "author": "agente de código (2ª geração, a partir da avaliação da 1ª)" },
+  "claims": "Mais legível para iniciantes, mesma novidade de 2 linhas."
+}

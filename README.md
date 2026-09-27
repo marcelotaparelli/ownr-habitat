@@ -1,0 +1,35 @@
+# OWNR Habitat
+
+**Agents generate change. OWNR decides what survives.**
+
+Plano de controle de evolução em circuito fechado. O software evoluído (o **organismo**) vive no seu próprio repositório git; o Habitat só o referencia por configuração e nunca vive dentro dele. O primeiro organismo é o OWNR Replay (`../ownr-replay`).
+
+```text
+OWNR Habitat (este repo)                      Organismo (ex.: ../ownr-replay)
+Mission · Envelope · Evaluators · Selector    código, testes, instrumentos
+Recorder · MutationProvider · Cockpit    ──►  baseline = rev-parse <baselineRef>
+         controla / observa                   candidates = worktrees + refs/habitat/candidates/*
+```
+
+```bash
+bun install
+bun run habitat serve                              # Cockpit em http://127.0.0.1:3100 (só loopback)
+bun run habitat observe                            # mede a baseline do organismo num worktree isolado
+bun run habitat evolve <proposta>                  # candidate isolado → avaliadores → decisão
+bun run habitat reevaluate <candidate>             # repete a mudança sobre a baseline atual
+bun run habitat accept <candidate> --by <nome>     # ato humano: fast-forward da baseline do organismo
+bun run habitat revise-mission --by <nome>         # ato humano: adota uma definição de missão alterada
+bun run habitat status
+bun test && bunx tsc --noEmit
+```
+
+Configuração (todas opcionais): `HABITAT_PORT`, `HABITAT_DB` (`habitat.sqlite`), `HABITAT_WORKTREES` (`~/.cache/ownr-habitat/worktrees`), `HABITAT_ORGANISM` (`replay`). Organismo Replay: `REPLAY_REPOSITORY` (`../ownr-replay`), `REPLAY_BASELINE_REF` (`master`), `REPLAY_EVENTS_DB` (`repo-replay.sqlite`, relativo ao organismo), `REPLAY_PROPOSALS` (`proposals/replay`).
+
+- **Organismo**: `Organism { repositoryPath, baselineRef, allowedPaths }`. A baseline é sempre `git rev-parse <baselineRef>^{commit}` no repositório do organismo — commits no Habitat não a movem.
+- **Missão** `replay-ttvo-m1`, envelope, fitness (proxies × outcomes) e métricas protegidas: `src/replay/organism.ts`. Snapshot em `habitat.sqlite`; mudar a definição exige `revise-mission`.
+- **Avaliadores**: path policy (antes de tudo), instrumentos do organismo (`bun scripts/measure.ts curriculum|bundle`, JSON validado), `tsc`, `bun test`. A identidade de cada avaliador é derivada: hash dos arquivos que o implementam + hash da configuração (argv, timeout, parser, parâmetros).
+- **Evidência vinculada** a baseline SHA e SHA avaliado do organismo, missão, envelope e identidade dos avaliadores. Se algo muda → **STALE** → reavaliar. A revisão do Habitat não faz parte do vínculo.
+- **Vereditos**: INELIGIBLE · STALE · REGRESSED · TRADEOFF · NEUTRAL · PROXY_IMPROVED · EXPERIMENT_READY · OUTCOME_IMPROVED · MISSION_MET (vetor de métricas, sem score único; proxies melhores param em EXPERIMENT_READY).
+- **Aceitar** é humano: fast-forward do `baselineRef` do organismo (merge `--ff-only` se estiver em checkout, senão `update-ref` com compare-and-swap). Sem push, sem deploy.
+- **Propostas** (entrada de qualquer origem): `proposals/<organismo>/<id>/{proposal.json,change.patch}`.
+- Comandos rodam no host com os direitos do usuário: **worktree não é fronteira de segurança**.

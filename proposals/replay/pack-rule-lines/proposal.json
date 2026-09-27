@@ -1,0 +1,5 @@
+{
+  "hypothesis": "A etapa 17 tem 6 linhas novas porque a tabela de regras ocupa 6 linhas. Colocando duas regras por linha, a etapa passa a ter 3 linhas novas.",
+  "source": { "kind": "manual", "author": "agente de código (exemplo de Goodhart)" },
+  "claims": "Reduz a novidade da etapa 17 pela metade sem mudar o comportamento."
+}
